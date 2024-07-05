@@ -10,9 +10,7 @@ defmodule Fog.Application do
     children = [
       FogWeb.Telemetry,
       Fog.Repo,
-      {Ecto.Migrator,
-        repos: Application.fetch_env!(:fog, :ecto_repos),
-        skip: skip_migrations?()},
+      {Ecto.Migrator, repos: Application.fetch_env!(:fog, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:fog, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Fog.PubSub},
       # Start a worker by calling: Fog.Worker.start_link(arg)
