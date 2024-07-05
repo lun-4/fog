@@ -14,6 +14,7 @@ defmodule FogWeb.Router do
   scope "/api/v1", FogWeb do
     pipe_through(:api)
     post("/logline", LogController, :incoming_line)
+    get("/logs", LogController, :fetch_logs)
   end
 
   defmodule CacheBodyReader do

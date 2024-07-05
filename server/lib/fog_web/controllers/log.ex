@@ -14,4 +14,24 @@ defmodule FogWeb.LogController do
     conn
     |> json(%{})
   end
+
+  def fetch_logs(conn, params) do
+    {start_ts, ""} = params |> Map.get("start") |> Integer.parse()
+    {end_ts, ""} = params |> Map.get("end") |> Integer.parse()
+
+    Fog.Log.logs_between_timestamps!(start_ts, end_ts)
+    |> Enum.map(fn entry ->
+      Map.delete(entry, :__struct__)
+      |> Map.delete(:__meta__)
+    end)
+    |> then(fn logs ->
+      %{
+        logs: logs
+      }
+    end)
+    |> then(fn body ->
+      conn
+      |> json(body)
+    end)
+  end
 end
