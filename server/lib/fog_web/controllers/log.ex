@@ -15,6 +15,19 @@ defmodule FogWeb.LogController do
     |> json(%{})
   end
 
+  def exec_filters(logs, params) do
+    maybe_exact = params |> Map.get("filter_grep_exact")
+
+    if maybe_exact do
+      logs
+      |> Enum.filter(fn log ->
+        String.contains?(log.entry, maybe_exact)
+      end)
+    else
+      logs
+    end
+  end
+
   def fetch_logs(conn, params) do
     {start_ts, ""} = params |> Map.get("start") |> Integer.parse()
     {end_ts, ""} = params |> Map.get("end") |> Integer.parse()
@@ -24,6 +37,7 @@ defmodule FogWeb.LogController do
       Map.delete(entry, :__struct__)
       |> Map.delete(:__meta__)
     end)
+    |> exec_filters(params)
     |> then(fn logs ->
       %{
         logs: logs
