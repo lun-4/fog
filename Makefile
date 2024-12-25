@@ -1,7 +1,6 @@
 all:
 	mkdir -p bin
-	go build -o bin/uploader ./cmd/uploader 
-	go build -o bin/receiver ./cmd/receiver 
+	cd ./agents/file && go build && mv ./file ../../bin/fog-agent-file
 
 clean:
 	rm -rv ./bin
