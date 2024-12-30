@@ -2,282 +2,294 @@ package main
 
 import (
 	"bufio"
-	"database/sql"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/signal"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/websocket"
-	_ "github.com/mattn/go-sqlite3"
 )
 
-type Config struct {
-	ServerURL    string
-	APIToken     string
-	Hostname     string
-	LogFile      string
-	DatabasePath string
+type Message struct {
+	Op   string      `json:"op"`
+	Data interface{} `json:"data,omitempty"`
 }
 
-type LogMessage struct {
-	Type      string    `json:"type"`
-	Timestamp time.Time `json:"timestamp"`
-	Message   string    `json:"message"`
-	OffsetID  string    `json:"offset_id"`
-}
-
-type ServerAck struct {
-	Type      string    `json:"type"`
-	OffsetID  string    `json:"offset_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Status    string    `json:"status"`
+type LogData struct {
+	Key0 string `json:"key0"`
+	Key1 string `json:"key1"`
+	Data string `json:"data"`
 }
 
 type Agent struct {
-	config     Config
-	db         *sql.DB
-	conn       *websocket.Conn
-	watcher    *fsnotify.Watcher
-	lastOffset string
+	serverURL    string
+	token        string
+	logFile      string
+	key0         string
+	key1         string
+	conn         *websocket.Conn
+	sendChan     chan Message
+	done         chan struct{}
+	reconnectMux sync.Mutex
+	isConnected  bool
 }
 
-func NewAgent(config Config) (*Agent, error) {
-	db, err := sql.Open("sqlite3", config.DatabasePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Create tables if they don't exist
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS cursor (
-			id INTEGER PRIMARY KEY,
-			file_path TEXT NOT NULL,
-			offset INTEGER NOT NULL,
-			last_timestamp TEXT NOT NULL,
-			offset_id TEXT NOT NULL
-		)
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tables: %w", err)
-	}
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create file watcher: %w", err)
-	}
-
+func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 	return &Agent{
-		config:  config,
-		db:      db,
-		watcher: watcher,
-	}, nil
+		serverURL: serverURL,
+		token:     token,
+		logFile:   logFile,
+		key0:      key0,
+		key1:      key1,
+		sendChan:  make(chan Message, 100),
+		done:      make(chan struct{}),
+	}
 }
 
-func (a *Agent) connectWebSocket() error {
-	dialer := websocket.Dialer{}
-	conn, _, err := dialer.Dial(a.config.ServerURL+"/ws/ship", nil)
+func (a *Agent) connect() error {
+	a.reconnectMux.Lock()
+	defer a.reconnectMux.Unlock()
+
+	if a.isConnected {
+		return nil
+	}
+
+	wsURL := fmt.Sprintf("%s/api/v1/agent/ws?token=%s", a.serverURL, a.token)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect websocket: %w", err)
+		return fmt.Errorf("dial error: %v", err)
+	}
+
+	// Wait for HELLO message
+	var msg Message
+	err = conn.ReadJSON(&msg)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("read hello error: %v", err)
+	}
+	if msg.Op != "hello" {
+		conn.Close()
+		return fmt.Errorf("expected hello message, got: %s", msg.Op)
 	}
 
 	a.conn = conn
+	a.isConnected = true
 	return nil
 }
 
-func (a *Agent) getLastPosition() (int64, string, error) {
-	var offset int64
-	var offsetID string
-	err := a.db.QueryRow(`
-		SELECT offset, offset_id FROM cursor 
-		WHERE file_path = ? 
-		ORDER BY id DESC LIMIT 1`,
-		a.config.LogFile,
-	).Scan(&offset, &offsetID)
+func (a *Agent) disconnect() {
+	a.reconnectMux.Lock()
+	defer a.reconnectMux.Unlock()
 
-	if err == sql.ErrNoRows {
-		return 0, "", nil
+	if a.conn != nil {
+		a.conn.Close()
+		a.conn = nil
 	}
-	if err != nil {
-		return 0, "", fmt.Errorf("failed to get last position: %w", err)
-	}
-
-	return offset, offsetID, nil
+	a.isConnected = false
 }
 
-func (a *Agent) updatePosition(offset int64, timestamp time.Time, offsetID string) error {
-	_, err := a.db.Exec(`
-		INSERT INTO cursor (file_path, offset, last_timestamp, offset_id)
-		VALUES (?, ?, ?, ?)`,
-		a.config.LogFile, offset, timestamp.Format(time.RFC3339), offsetID,
-	)
-	return err
+func (a *Agent) reconnect() {
+	for {
+		err := a.connect()
+		if err == nil {
+			log.Println("Successfully reconnected")
+			return
+		}
+		log.Printf("Reconnect failed: %v, retrying in 5 seconds...", err)
+		time.Sleep(5 * time.Second)
+	}
 }
 
-func (a *Agent) shipLogs() error {
-	file, err := os.Open(a.config.LogFile)
+func (a *Agent) handleWebSocket() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.done:
+			return
+
+		case msg := <-a.sendChan:
+			if !a.isConnected {
+				a.reconnect()
+			}
+			err := a.conn.WriteJSON(msg)
+			if err != nil {
+				log.Printf("Write error: %v", err)
+				a.disconnect()
+				a.reconnect()
+			}
+
+		case <-ticker.C:
+			if !a.isConnected {
+				a.reconnect()
+				continue
+			}
+
+			err := a.conn.WriteJSON(Message{Op: "heartbeat"})
+			if err != nil {
+				log.Printf("Heartbeat write error: %v", err)
+				a.disconnect()
+				a.reconnect()
+				continue
+			}
+		}
+	}
+}
+
+func (a *Agent) handleServerMessages() {
+	for {
+		select {
+		case <-a.done:
+			return
+		default:
+			if !a.isConnected {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			var msg Message
+			err := a.conn.ReadJSON(&msg)
+			if err != nil {
+				log.Printf("Read error: %v", err)
+				a.disconnect()
+				continue
+			}
+
+			switch msg.Op {
+			case "heartbeat":
+				err := a.conn.WriteJSON(Message{Op: "heartbeat_ack"})
+				if err != nil {
+					log.Printf("Heartbeat ack write error: %v", err)
+					a.disconnect()
+				}
+			case "heartbeat_ack":
+				// Expected response to our heartbeat
+			default:
+				log.Printf("Received unknown message type: %s", msg.Op)
+			}
+		}
+	}
+}
+
+func (a *Agent) watchFile() error {
+	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return fmt.Errorf("failed to open log file: %w", err)
+		return fmt.Errorf("new watcher error: %v", err)
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(a.logFile)
+	if err != nil {
+		return fmt.Errorf("add watcher error: %v", err)
+	}
+
+	// Open file for initial reading
+	file, err := os.Open(a.logFile)
+	if err != nil {
+		return fmt.Errorf("open file error: %v", err)
 	}
 	defer file.Close()
 
-	offset, _, err := a.getLastPosition()
+	// Seek to end of file
+	_, err = file.Seek(0, 2)
 	if err != nil {
-		return err
+		return fmt.Errorf("seek error: %v", err)
 	}
 
-	// Seek to last known position
-	if offset > 0 {
-		_, err = file.Seek(offset, 0)
-		if err != nil {
-			return fmt.Errorf("failed to seek file: %w", err)
-		}
-	}
+	// Create a buffered reader for line-by-line reading
+	reader := bufio.NewReader(file)
 
-	// Start backfill if needed
-	if offset == 0 {
-		err = a.sendBackfillStart()
-		if err != nil {
-			return err
-		}
-	}
+	for {
+		select {
+		case <-a.done:
+			return nil
 
-	// Read and ship new logs
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		timestamp := time.Now() // In reality, parse from log line
-		offsetID := fmt.Sprintf("%s-%d", timestamp.Format("20060102150405"), offset)
+		case event := <-watcher.Events:
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				for {
+					// Read until next newline
+					line, err := reader.ReadString('\n')
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						log.Printf("Read error: %v", err)
+						break
+					}
 
-		msg := LogMessage{
-			Type:      "log",
-			Timestamp: timestamp,
-			Message:   line,
-			OffsetID:  offsetID,
-		}
+					// Remove trailing newline if present
+					line = strings.TrimRight(line, "\r\n")
 
-		err = a.conn.WriteJSON(msg)
-		if err != nil {
-			return fmt.Errorf("failed to send log: %w", err)
-		}
-
-		// Wait for acknowledgment
-		var ack ServerAck
-		err = a.conn.ReadJSON(&ack)
-		if err != nil {
-			return fmt.Errorf("failed to receive ack: %w", err)
-		}
-
-		if ack.Status == "accepted" {
-			err = a.updatePosition(offset+int64(len(line)+1), timestamp, offsetID)
-			if err != nil {
-				return fmt.Errorf("failed to update position: %w", err)
+					// Send the complete line
+					a.sendChan <- Message{
+						Op: "send",
+						Data: LogData{
+							Key0: a.key0,
+							Key1: a.key1,
+							Data: line,
+						},
+					}
+				}
 			}
-			offset += int64(len(line) + 1)
-			a.lastOffset = offsetID
+
+		case err := <-watcher.Errors:
+			log.Printf("Watcher error: %v", err)
 		}
 	}
-
-	if offset == 0 {
-		err = a.sendBackfillEnd()
-		if err != nil {
-			return err
-		}
-	}
-
-	return scanner.Err()
-}
-
-func (a *Agent) sendBackfillStart() error {
-	msg := map[string]interface{}{
-		"type":            "backfill_start",
-		"from_timestamp":  time.Now().Add(-24 * time.Hour),
-		"estimated_count": 1000, // You'd want to estimate this
-	}
-	return a.conn.WriteJSON(msg)
-}
-
-func (a *Agent) sendBackfillEnd() error {
-	msg := map[string]interface{}{
-		"type":         "backfill_end",
-		"to_timestamp": time.Now(),
-		"actual_count": 1000, // You'd want to track this
-	}
-	return a.conn.WriteJSON(msg)
-}
-
-func (a *Agent) handleHeartbeat() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		msg := map[string]interface{}{
-			"type":                 "heartbeat_ack",
-			"timestamp":            time.Now(),
-			"last_received_offset": a.lastOffset,
-		}
-		err := a.conn.WriteJSON(msg)
-		if err != nil {
-			log.Printf("Failed to send heartbeat: %v", err)
-			return
-		}
-	}
-}
-
-func (a *Agent) Run() error {
-	// Connect to WebSocket
-	err := a.connectWebSocket()
-	if err != nil {
-		return err
-	}
-	defer a.conn.Close()
-
-	// Watch for file changes
-	err = a.watcher.Add(a.config.LogFile)
-	if err != nil {
-		return fmt.Errorf("failed to watch file: %w", err)
-	}
-	defer a.watcher.Close()
-
-	// Start heartbeat goroutine
-	go a.handleHeartbeat()
-
-	// Initial ship of existing logs
-	err = a.shipLogs()
-	if err != nil {
-		return err
-	}
-
-	// Watch for file changes
-	for event := range a.watcher.Events {
-		if event.Op&fsnotify.Write == fsnotify.Write {
-			err = a.shipLogs()
-			if err != nil {
-				log.Printf("Failed to ship logs: %v", err)
-			}
-		}
-	}
-
-	return nil
 }
 
 func main() {
-	config := Config{
-		ServerURL:    "wss://fog-server:4000/api/v1",
-		APIToken:     os.Getenv("FOG_API_TOKEN"),
-		Hostname:     os.Getenv("HOSTNAME"),
-		LogFile:      os.Getenv("LOG_FILE"),
-		DatabasePath: os.Getenv("FOG_DB_PATH"),
+	// Command line flags
+	serverURL := flag.String("server", "", "WebSocket server URL")
+	token := flag.String("token", "", "Authentication token")
+	logFile := flag.String("file", "", "File to tail")
+	key0 := flag.String("key0", "", "Key0 identifier")
+	key1 := flag.String("key1", "", "Key1 identifier")
+	flag.Parse()
+
+	if *serverURL == "" || *token == "" || *logFile == "" || *key0 == "" || *key1 == "" {
+		log.Fatal("All flags are required: -server, -token, -file, -key0, -key1")
 	}
 
-	agent, err := NewAgent(config)
+	agent := NewAgent(*serverURL, *token, *logFile, *key0, *key1)
+
+	// Initial connection
+	err := agent.connect()
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatal("Initial connection failed:", err)
 	}
 
-	err = agent.Run()
-	if err != nil {
-		log.Fatalf("Agent failed: %v", err)
+	// Start WebSocket handlers
+	go agent.handleWebSocket()
+	go agent.handleServerMessages()
+
+	// Start file watching
+	go func() {
+		err := agent.watchFile()
+		if err != nil {
+			log.Printf("File watch error: %v", err)
+		}
+	}()
+
+	// Wait for interrupt
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
+
+	log.Println("Shutting down...")
+	close(agent.done)
+	if agent.conn != nil {
+		agent.conn.WriteMessage(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		)
+		agent.conn.Close()
 	}
 }
