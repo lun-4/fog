@@ -15,7 +15,7 @@ config :fog, Fog.Repo,
 config :fog, FogWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "wCnTohgZQb60qHIX2XR64DktudVOcWVlsLp9BKvoNgZxRdkutZ0If7S6NfZ9QMBN",
-  server: false
+  server: true
 
 # Print only warnings and errors during test
 config :logger, level: :warning

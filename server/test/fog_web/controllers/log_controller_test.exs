@@ -1,5 +1,5 @@
 defmodule Fog.IntegrationTest do
-  use ExUnit.Case
+  use FogWeb.ConnCase
 
   # We'll use WebSockex for WS client in tests
   defmodule TestAgent do
@@ -45,12 +45,14 @@ defmodule Fog.IntegrationTest do
 
     Fog.Authentication.store_token(token)
 
-    base_url = "ws://localhost:4000"
     test_pid = self()
+    base_url = "ws://localhost:4002"
+    ws_url = "#{base_url}/api/v1/agent/ws?token=#{token}"
+    IO.puts(ws_url)
 
     {:ok, client} =
       TestAgent.start_link(
-        "#{base_url}/api/v1/agent/ws?token=#{token}",
+        ws_url,
         %{test_pid: test_pid}
       )
 
@@ -233,7 +235,6 @@ defmodule Fog.IntegrationTest do
 
         if length(acc) + length(new_events) >= 3 do
           # We got all our test events, return them
-          HTTPoison.close(conn)
           acc ++ new_events
         else
           HTTPoison.stream_next(conn)
