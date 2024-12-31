@@ -14,7 +14,7 @@ config :fog, Fog.Repo,
 # you can enable the server option below.
 config :fog, FogWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
-  secret_key_base: "9gk6GDR6HjO42P0kvapU6c4BDgudYl4wzHCvbgf0snozenx78/ObzFmgzXrtiLCT",
+  secret_key_base: "wCnTohgZQb60qHIX2XR64DktudVOcWVlsLp9BKvoNgZxRdkutZ0If7S6NfZ9QMBN",
   server: false
 
 # Print only warnings and errors during test
@@ -23,6 +23,6 @@ config :logger, level: :warning
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
+# Enable helpful, but potentially expensive runtime checks
 config :phoenix_live_view,
-  # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true

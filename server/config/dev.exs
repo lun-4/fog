@@ -16,11 +16,11 @@ config :fog, Fog.Repo,
 config :fog, FogWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}, port: 4000],
+  http: [ip: {127, 0, 0, 1}, port: 4087],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base: "7h6v/6zZAJOFxII0KZotgpVyd8EFuCPRArWSGmH3DgttPW3L9FRX6P5YVjE34Ybm",
+  secret_key_base: "TVPI38Qp1rW/x71YpgQgzzOfwT9mnHiDYS7SlEI4Eux+YROWIsYrD4FIv1p+Vvgz",
   watchers: []
 
 # ## SSL Support
@@ -46,6 +46,15 @@ config :fog, FogWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
+# Watch static and templates for browser reloading.
+config :fog, FogWeb.Endpoint,
+  live_reload: [
+    patterns: [
+      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"lib/fog_web/(controllers|live|components)/.*(ex|heex)$"
+    ]
+  ]
+
 # Enable dev routes for dashboard and mailbox
 config :fog, dev_routes: true
 
@@ -58,3 +67,9 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
+
+config :phoenix_live_view,
+  # Include HEEx debug annotations as HTML comments in rendered markup
+  debug_heex_annotations: true,
+  # Enable helpful, but potentially expensive runtime checks
+  enable_expensive_runtime_checks: true

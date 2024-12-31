@@ -1,29 +1,29 @@
 defmodule FogWeb.Router do
   use FogWeb, :router
 
+  pipeline :browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {FogWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
   pipeline :api do
-    plug Plug.Parsers,
-      parsers: [:urlencoded, :json],
-      pass: ["text/*"],
-      body_reader: {CacheBodyReader, :read_body, []},
-      json_decoder: Jason
-
-    plug(:accepts, ["json"])
+    plug :accepts, ["json"]
   end
 
-  scope "/api/v1", FogWeb do
-    pipe_through(:api)
-    post("/logline", LogController, :incoming_line)
-    get("/logs", LogController, :fetch_logs)
+  scope "/", FogWeb do
+    pipe_through :browser
+
+    get "/", PageController, :home
   end
 
-  defmodule CacheBodyReader do
-    def read_body(conn, opts) do
-      {:ok, body, conn} = Plug.Conn.read_body(conn, opts)
-      conn = update_in(conn.assigns[:raw_body], &[body | &1 || []])
-      {:ok, body, conn}
-    end
-  end
+  # Other scopes may use custom stacks.
+  # scope "/api", FogWeb do
+  #   pipe_through :api
+  # end
 
   # Enable LiveDashboard in development
   if Application.compile_env(:fog, :dev_routes) do
@@ -35,9 +35,9 @@ defmodule FogWeb.Router do
     import Phoenix.LiveDashboard.Router
 
     scope "/dev" do
-      pipe_through([:fetch_session, :protect_from_forgery])
+      pipe_through :browser
 
-      live_dashboard("/dashboard", metrics: FogWeb.Telemetry)
+      live_dashboard "/dashboard", metrics: FogWeb.Telemetry
     end
   end
 end

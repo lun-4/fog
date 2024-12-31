@@ -16,11 +16,11 @@ config :fog, FogWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [json: FogWeb.ErrorJSON],
+    formats: [html: FogWeb.ErrorHTML, json: FogWeb.ErrorJSON],
     layout: false
   ],
   pubsub_server: Fog.PubSub,
-  live_view: [signing_salt: "G9BqKkBg"]
+  live_view: [signing_salt: "4wC10NGA"]
 
 # Configures Elixir's Logger
 config :logger, :console,
