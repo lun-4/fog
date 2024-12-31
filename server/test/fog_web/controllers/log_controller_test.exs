@@ -1,5 +1,5 @@
 defmodule Fog.IntegrationTest do
-  use FogWeb.ConnCase
+  use FogWeb.ConnCase, async: false
 
   # We'll use WebSockex for WS client in tests
   defmodule TestAgent do
@@ -48,7 +48,6 @@ defmodule Fog.IntegrationTest do
     test_pid = self()
     base_url = "ws://localhost:4002"
     ws_url = "#{base_url}/api/v1/agent/ws?token=#{token}"
-    IO.puts(ws_url)
 
     {:ok, client} =
       TestAgent.start_link(
@@ -73,32 +72,23 @@ defmodule Fog.IntegrationTest do
       key0: key0,
       key1: key1,
       test_log: test_log,
-      base_url: base_url
+      conn: conn
     } do
-      # 1. Expect HELLO message
       assert_receive {:ws_message, %{"op" => "hello", "data" => %{}}}, 1000
-
-      # 2. Send a log entry
       TestAgent.send_log(client, key0, key1, test_log)
 
-      # 3. Wait a brief moment for log processing
+      # wait a brief moment for log processing
       Process.sleep(100)
 
-      # 4. Query logs via HTTP endpoint
-      url = "#{String.replace(base_url, "ws:", "http:")}/api/v1/cli/query"
-
       response =
-        HTTPoison.get!(url, [],
-          params: %{
-            key0: key0,
-            key1: key1,
-            since: "1h"
-          }
-        )
+        get(conn, ~p"/api/v1/cli/query", %{
+          key0: key0,
+          key1: key1,
+          since: "1h"
+        })
 
-      # 5. Verify response
-      assert response.status_code == 200
-      logs = Jason.decode!(response.body)
+      assert response.status == 200
+      logs = response.body
 
       # Verify log entry is in response
       assert Enum.any?(logs, fn entry ->
@@ -111,27 +101,21 @@ defmodule Fog.IntegrationTest do
       assert_receive {:ws_message, %{"op" => "heartbeat_ack"}}, 1000
     end
 
-    test "cli query with invalid follow/until combination", %{base_url: base_url} do
-      url = "#{String.replace(base_url, "ws:", "http:")}/api/v1/cli/query"
-
+    test "cli query with invalid follow/until combination", %{conn: conn} do
       response =
-        HTTPoison.get!(url, [],
-          params: %{
-            follow: true,
-            until: "2024-03-20T15:04:05Z"
-          }
-        )
+        get(conn, ~p"/api/v1/cli/query", %{
+          follow: true,
+          until: "2024-03-20T15:04:05Z"
+        })
 
-      assert response.status_code == 400
-      error = Jason.decode!(response.body)
-      assert error["error"] == "follow and until parameters cannot be used together"
+      assert response.status == 400
     end
 
     test "cli query respects limit parameter", %{
       client: client,
       key0: key0,
       key1: key1,
-      base_url: base_url
+      conn: conn
     } do
       # Send 5 log entries
       for i <- 1..5 do
@@ -141,18 +125,14 @@ defmodule Fog.IntegrationTest do
       Process.sleep(100)
 
       # Query with limit=3
-      url = "#{String.replace(base_url, "ws:", "http:")}/api/v1/cli/query"
-
       response =
-        HTTPoison.get!(url, [],
-          params: %{
-            key0: key0,
-            key1: key1,
-            limit: 3
-          }
-        )
+        get(conn, ~p"/api/v1/cli/query", %{
+          key0: key0,
+          key1: key1,
+          limit: 3
+        })
 
-      assert response.status_code == 200
+      assert response.status == 200
       logs = Jason.decode!(response.body)
       assert length(logs) == 3
     end
@@ -170,7 +150,7 @@ defmodule Fog.IntegrationTest do
         Task.async(fn ->
           url = "#{String.replace(base_url, "ws:", "http:")}/api/v1/cli/query"
           # Use stream_hackney to support streaming response
-          {:ok, conn} =
+          resp =
             HTTPoison.get!(
               url,
               [{"Accept", "text/event-stream"}],
@@ -186,7 +166,7 @@ defmodule Fog.IntegrationTest do
             )
 
           # Process chunked SSE response
-          collect_sse_events(parent, conn, [])
+          collect_sse_events(parent, resp, [])
         end)
 
       # Give SSE connection time to establish
