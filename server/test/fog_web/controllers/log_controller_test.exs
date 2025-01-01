@@ -1,4 +1,5 @@
 defmodule Fog.IntegrationTest do
+  require Logger
   use FogWeb.ConnCase, async: false
 
   # We'll use WebSockex for WS client in tests
@@ -43,7 +44,9 @@ defmodule Fog.IntegrationTest do
   end
 
   setup do
-    :ok = Application.put_env(:fog, Fog.LogStore, data_path: "/tmp/fog-test-#{random_string()}")
+    data_path = "/tmp/fog-test-#{random_string()}"
+    Logger.info("Test data path is #{data_path}")
+    :ok = Application.put_env(:fog, Fog.LogStore, data_path: data_path)
     # Configure test agent credentials
     key0 = "test.host"
     key1 = "test_service"

@@ -15,7 +15,7 @@ defmodule Fog.LogStore do
   def store(key0, key1, line) do
     log_path = file_for(key0, key1)
     {:ok, file} = File.open(log_path, [:append])
-    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    timestamp = DateTime.utc_now() |> DateTime.to_unix()
     IO.write(file, "#{timestamp}\t#{line}\n")
     File.close(file)
   end
