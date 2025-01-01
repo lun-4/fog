@@ -11,14 +11,14 @@ defmodule FogWeb.Router do
   end
 
   pipeline :api do
-    plug(:accepts, ["json"])
+    # TODO why doesnt this work with accept: text/event-stream
+    # plug(:accepts, ["json", "text/event-stream"])
   end
 
   scope "/api/v1", FogWeb do
     pipe_through(:api)
 
     get("/cli/query", CLIController, :query)
-    # get("/agent/ws", AgentSocket, :websocket)
   end
 
   scope "/", FogWeb do

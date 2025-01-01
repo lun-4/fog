@@ -95,7 +95,7 @@ defmodule Fog.LogStore.Realtime do
   end
 
   @impl true
-  def handle_cast({:process_log, log_entry}, state) do
+  def handle_cast({:process_log, %Fog.LogStore.LogLine{} = log_entry}, state) do
     Enum.each(state.filters, fn {_hash, %{filter: filter_params, clients: clients}} ->
       if matches_filter?(log_entry, filter_params) do
         Enum.each(clients, fn {client_id, pid} ->
@@ -162,35 +162,24 @@ defmodule Fog.LogStore.Realtime do
     end
   end
 
-  defp matches_key0?(%{"key0" => key0}, %{"key0" => filter_key0})
-       when is_list(filter_key0),
-       do: key0 in filter_key0
-
-  defp matches_key0?(%{"key0" => key0}, %{"key0" => filter_key0}),
-    do: key0 == filter_key0
+  defp matches_key0?(entry, %{"key0" => filter_key0}),
+    do: entry.key0 == filter_key0
 
   defp matches_key0?(_, %{"key0" => _}), do: false
   defp matches_key0?(_, _), do: true
 
-  defp matches_key1?(%{"key1" => key1}, %{"key1" => filter_key1})
-       when is_list(filter_key1),
-       do: key1 in filter_key1
-
-  defp matches_key1?(%{"key1" => key1}, %{"key1" => filter_key1}),
-    do: key1 == filter_key1
+  defp matches_key1?(entry, %{"key1" => filter_key1}),
+    do: entry.key1 == filter_key1
 
   defp matches_key1?(_, %{"key1" => _}), do: false
   defp matches_key1?(_, _), do: true
 
   defp matches_time_range?(log_entry, filter_params) do
-    timestamp = Map.get(log_entry, "timestamp")
+    timestamp = log_entry.timestamp || raise "nil timestamp. should never happen"
     since = Map.get(filter_params, "since")
     until = Map.get(filter_params, "until")
 
     cond do
-      is_nil(timestamp) ->
-        false
-
       is_nil(since) and is_nil(until) ->
         true
 
@@ -205,7 +194,8 @@ defmodule Fog.LogStore.Realtime do
     end
   end
 
-  defp matches_grep?(%{"data" => data}, %{"grep" => pattern}) when is_binary(data) do
+  defp matches_grep?(%Fog.LogStore.LogLine{text: data}, %{"grep" => pattern})
+       when is_binary(data) do
     String.contains?(data, pattern)
   end
 

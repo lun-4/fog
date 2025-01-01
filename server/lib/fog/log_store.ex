@@ -1,6 +1,12 @@
 defmodule Fog.LogStore do
   require Logger
 
+  defmodule LogLine do
+    @derive Jason.Encoder
+
+    defstruct [:key0, :key1, :timestamp, :text]
+  end
+
   defp folder_for(key0, key1) do
     cfg = Application.fetch_env!(:fog, Fog.LogStore)
     data_path = Path.expand(cfg[:data_path])
@@ -24,6 +30,13 @@ defmodule Fog.LogStore do
     # <version>\t<timestamp>\t<log itself>
     IO.write(file, "1\t#{timestamp}\t#{line}\n")
     File.close(file)
+
+    Fog.LogStore.Realtime.process_log(%LogLine{
+      key0: key0,
+      key1: key1,
+      timestamp: now,
+      text: line
+    })
   end
 
   defp parse_datetime(input) when is_binary(input) do
@@ -55,12 +68,6 @@ defmodule Fog.LogStore do
     end
   end
 
-  defmodule LogLine do
-    @derive Jason.Encoder
-
-    defstruct [:timestamp, :text]
-  end
-
   def query(params) do
     # TODO support not having key0 (all logs everywhere)
     # TODO support not having key1 (all key1s in key0)
@@ -75,45 +82,52 @@ defmodule Fog.LogStore do
     {:ok, since} = (params["since"] || DateTime.to_iso8601(now)) |> parse_datetime
 
     file_path = file_for(key0, key1, since)
-    {:ok, data} = File.read(file_path)
-
     since = since |> DateTime.to_unix()
 
-    data
-    |> String.split("\n")
-    |> then(fn
-      [] ->
-        Logger.warning("no logs found, since=#{since} now=#{now}")
+    with {:ok, data} <- File.read(file_path) do
+      data
+      |> String.split("\n")
+      |> then(fn
+        [] ->
+          Logger.warning("no logs found, since=#{since} now=#{now}")
 
-      v ->
-        Logger.debug("got #{length(v)} lines, since=#{since} now=#{now}")
-        v
-    end)
-    |> Enum.map(fn line ->
-      cond do
-        String.starts_with?(line, "1") ->
-          parsed = String.split(line, "\t")
+        v ->
+          Logger.debug("got #{length(v)} lines, since=#{since} now=#{now}")
+          v
+      end)
+      |> Enum.map(fn line ->
+        cond do
+          String.starts_with?(line, "1") ->
+            parsed = String.split(line, "\t")
 
-          if length(parsed) < 3 do
-            Logger.warning("invalid log line: #{line}")
-          end
+            if length(parsed) < 3 do
+              Logger.warning("invalid log line: #{line}")
+            end
 
-          line_timestamp_unix_str = parsed |> Enum.at(1)
-          {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
-          logline = parsed |> Enum.slice(1..-1) |> Enum.join("\t")
-          %LogLine{timestamp: line_timestamp, text: logline}
+            line_timestamp_unix_str = parsed |> Enum.at(1)
+            {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
+            logline = parsed |> Enum.slice(1..-1) |> Enum.join("\t")
 
-        true ->
-          nil
-      end
-    end)
-    |> Enum.filter(fn
-      nil ->
-        false
+            %LogLine{
+              key0: key0,
+              key1: key1,
+              timestamp: line_timestamp,
+              text: logline
+            }
 
-      %LogLine{} = l ->
-        l.timestamp > since
-    end)
-    |> Enum.slice(0..(limit - 1))
+          true ->
+            nil
+        end
+      end)
+      |> Enum.filter(fn
+        nil ->
+          false
+
+        %LogLine{} = l ->
+          l.timestamp > since
+      end)
+      |> Enum.slice(0..(limit - 1))
+      |> then(fn v -> {:ok, v} end)
+    end
   end
 end
