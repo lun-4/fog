@@ -9,14 +9,14 @@ defmodule FogWeb.CLIController do
       |> put_status(400)
       |> json(%{error: "follow and until parameters are incompatible"})
     else
-      params = Map.put(params, "params", Map.get(params, "limit", 1000))
+      params = Map.put(params, "limit", Map.get(params, "limit", 1000))
       handle_query(conn, params)
     end
   end
 
   defp handle_query(conn, %{"follow" => "true"} = params) do
     # Get initial logs
-    logs = Fog.LogStore.query_logs(params)
+    logs = Fog.LogStore.query(params)
     :ok = Fog.LogStore.subscribe(params)
 
     conn
@@ -27,7 +27,7 @@ defmodule FogWeb.CLIController do
   end
 
   defp handle_query(conn, params) do
-    logs = Fog.LogStore.query_logs(params)
+    logs = Fog.LogStore.query(params)
     json(conn, %{logs: logs})
   end
 

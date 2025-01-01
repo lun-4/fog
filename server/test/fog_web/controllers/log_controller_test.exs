@@ -89,19 +89,19 @@ defmodule Fog.IntegrationTest do
       # wait a brief moment for log processing
       Process.sleep(100)
 
-      response =
+      conn =
         get(conn, ~p"/api/v1/cli/query", %{
           key0: key0,
           key1: key1,
           since: "1h"
         })
 
-      assert response.status == 200
-      logs = response.body
+      rjson = json_response(conn, 200)
+      logs = rjson["logs"]
 
       # Verify log entry is in response
-      assert Enum.any?(logs, fn entry ->
-               String.contains?(entry, test_log)
+      assert Enum.any?(logs, fn %{"text" => text} = _entry ->
+               String.contains?(text, test_log)
              end)
 
       # 6. Test heartbeat
