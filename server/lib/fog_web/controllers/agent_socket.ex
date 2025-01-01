@@ -64,17 +64,31 @@ defmodule FogWeb.AgentSocket do
 
   def terminate(reason, _state) do
     Logger.debug("Agent socket terminate called: reason=#{inspect(reason)}")
+
+    case reason do
+      {:error, :closed} -> :noop
+      {:error, v} -> Logger.error(inspect(v))
+      _ -> :noop
+    end
+
     :ok
   end
 
-  # Custom message handling
-  defp handle_message(%{"type" => "heartbeat"} = _message, _opts, state) do
-    reply = Jason.encode!(%{type: "heartbeat_ack"})
-    {:reply, :ok, {:text, reply}, state}
+  defp handle_message(%{"op" => "heartbeat"} = _message, _opts, state) do
+    {:reply, :ok, json(%{op: "heartbeat_ack"}), state}
   end
 
-  defp handle_message(message, _opts, state) do
-    reply = Jason.encode!(%{error: "unknown_message_type", received: message})
-    {:reply, :ok, {:text, reply}, state}
+  defp handle_message(
+         %{"op" => "send", "data" => %{"data" => log_line, "key0" => key0, "key1" => key1}} =
+           _message,
+         _opts,
+         state
+       ) do
+    :ok = Fog.LogStore.store(key0, key1, log_line)
+    {:reply, :ok, json(%{op: "ack"}), state}
+  end
+
+  defp handle_message(_message, _opts, state) do
+    {:stop, :normal, {4000, "unknown op or bad data"}, state}
   end
 end

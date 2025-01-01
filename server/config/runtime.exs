@@ -20,6 +20,16 @@ if System.get_env("PHX_SERVER") do
   config :fog, FogWeb.Endpoint, server: true
 end
 
+if config_env() in [:prod, :dev] do
+  config :fog, Fog.LogStore,
+    data_path:
+      System.get_env("FOG_DATA_PATH") ||
+        raise("""
+        environment variable FOG_DATA_PATH is missing.
+        For example: /var/fog
+        """)
+end
+
 if config_env() == :prod do
   database_path =
     System.get_env("DATABASE_PATH") ||

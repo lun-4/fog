@@ -36,7 +36,14 @@ defmodule Fog.IntegrationTest do
     end
   end
 
+  defp random_string do
+    :crypto.strong_rand_bytes(20)
+    |> Base.hex_encode32(case: :lower)
+    |> binary_part(0, 20)
+  end
+
   setup do
+    :ok = Application.put_env(:fog, Fog.LogStore, data_path: "/tmp/fog-test-#{random_string()}")
     # Configure test agent credentials
     key0 = "test.host"
     key1 = "test_service"

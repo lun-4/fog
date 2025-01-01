@@ -18,7 +18,7 @@ config :fog, FogWeb.Endpoint,
   server: true
 
 # Print only warnings and errors during test
-config :logger, level: :warning
+config :logger, level: :debug
 
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
@@ -26,3 +26,5 @@ config :phoenix, :plug_init_mode, :runtime
 # Enable helpful, but potentially expensive runtime checks
 config :phoenix_live_view,
   enable_expensive_runtime_checks: true
+
+config :fog, Fog.LogStore, data_path: "/tmp"
