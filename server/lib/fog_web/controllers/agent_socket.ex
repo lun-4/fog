@@ -7,12 +7,13 @@ defmodule FogWeb.AgentSocket do
   end
 
   def connect(state) do
-    Logger.debug("Agent socket connect called")
+    Logger.debug("Agent socket connect called #{inspect(state)}")
     {:ok, state}
   end
 
   def init(state) do
-    Logger.debug("Agent socket init called")
+    Logger.debug("Agent socket init called #{inspect(state)}")
+    send(self(), :validate_auth)
     {:ok, state}
   end
 
@@ -31,13 +32,34 @@ defmodule FogWeb.AgentSocket do
     end
   end
 
+  defp json(msg), do: {:text, Jason.encode!(msg)}
+
+  def handle_info(:validate_auth, state) do
+    given_token = state.params["token"]
+
+    if given_token == nil do
+      {:stop, :normal, {4000, "missing token"}, state}
+    else
+      maybe_token = Fog.Authentication.one(given_token)
+
+      if maybe_token == nil do
+        {:stop, :normal, {4001, "invalid token"}, state}
+      else
+        {:push,
+         json(%{
+           op: "hello",
+           data: %{}
+         }), state}
+      end
+    end
+  end
+
   def handle_info(message, state) do
-    Logger.debug(
+    Logger.warning(
       "Agent socket handle_info called, message=#{inspect(message)} state=#{inspect(state)}"
     )
 
-    # Handle messages from other processes
-    {:push, {:text, Jason.encode!(message)}, state}
+    {:ok, state}
   end
 
   def terminate(reason, _state) do

@@ -38,16 +38,15 @@ defmodule Fog.IntegrationTest do
 
   setup do
     # Configure test agent credentials
-    token = "test_token"
     key0 = "test.host"
     key1 = "test_service"
     test_log = "sample log entry #{System.system_time(:second)}"
 
-    Fog.Authentication.store_token(token)
+    {:ok, token} = Fog.Authentication.create_random("test suite")
 
     test_pid = self()
     base_url = "ws://localhost:4002"
-    ws_url = "#{base_url}/api/v1/agent/ws?token=#{token}"
+    ws_url = "#{base_url}/api/v1/agent/ws?token=#{token.token}"
 
     {:ok, client} =
       TestAgent.start_link(
@@ -58,7 +57,7 @@ defmodule Fog.IntegrationTest do
     {:ok,
      %{
        client: client,
-       token: token,
+       token: token.token,
        key0: key0,
        key1: key1,
        test_log: test_log,

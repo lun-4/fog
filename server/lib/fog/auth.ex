@@ -7,6 +7,8 @@ defmodule Fog.Authentication do
     use Ecto.Schema
     import Ecto.Changeset
 
+    @type t :: %__MODULE__{}
+
     schema "agent_tokens" do
       field(:token, :string)
       field(:description, :string)
@@ -25,10 +27,25 @@ defmodule Fog.Authentication do
     end
   end
 
+  defp generate do
+    :crypto.strong_rand_bytes(30)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 40)
+  end
+
   def store_token(token, description \\ nil) do
     %Token{}
     |> Token.changeset(%{
       token: token,
+      description: description
+    })
+    |> Repo.insert()
+  end
+
+  def create_random(description) do
+    %Token{}
+    |> Token.changeset(%{
+      token: generate(),
       description: description
     })
     |> Repo.insert()
@@ -72,6 +89,7 @@ defmodule Fog.Authentication do
     |> Repo.all()
   end
 
+  @spec one(String.t()) :: Token.t() | nil
   def one(token) do
     Repo.get_by(Token, token: token)
   end
