@@ -17,7 +17,7 @@ defmodule FogWeb.CLIController do
   defp handle_query(conn, %{"follow" => "true"} = params) do
     # Get initial logs
     logs = Fog.LogStore.query(params)
-    :ok = Fog.LogStore.subscribe(params)
+    :ok = Fog.LogStore.Realtime.subscribe(Fog.LogStore.Realtime.generate_client_id(), params)
 
     conn
     |> put_resp_content_type("text/event-stream")

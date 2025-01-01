@@ -10,11 +10,10 @@ defmodule Fog.Application do
     children = [
       FogWeb.Telemetry,
       Fog.Repo,
-      {Ecto.Migrator,
-        repos: Application.fetch_env!(:fog, :ecto_repos),
-        skip: skip_migrations?()},
+      {Ecto.Migrator, repos: Application.fetch_env!(:fog, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:fog, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Fog.PubSub},
+      {Fog.LogStore.Realtime, name: Fog.LogStore.Realtime},
       # Start a worker by calling: Fog.Worker.start_link(arg)
       # {Fog.Worker, arg},
       # Start to serve requests, typically the last entry
