@@ -125,7 +125,7 @@ func queryLogs(config Config) error {
 	}
 
 	var response struct {
-		Results []LogEntry `json:"results"`
+		Results []LogEntry `json:"logs"`
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -138,6 +138,7 @@ func queryLogs(config Config) error {
 	}
 
 	// Print each log entry
+	fmt.Printf("Got %d logs for %s/%s:\n", len(response.Results), config.key0, config.key1)
 	for _, result := range response.Results {
 		fmt.Printf("[%s/%s] %s\n", result.Key0, result.Key1, result.Text)
 	}

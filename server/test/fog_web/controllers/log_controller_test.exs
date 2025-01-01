@@ -215,8 +215,6 @@ defmodule Fog.IntegrationTest do
           |> String.split("\n\n")
           |> Enum.filter(&(&1 != ""))
           |> Enum.map(fn event ->
-            IO.inspect(event)
-
             case Regex.run(~r/data: (.+)/, event) do
               [_, data] -> data
               _ -> nil

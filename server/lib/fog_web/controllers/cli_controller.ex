@@ -16,7 +16,11 @@ defmodule FogWeb.CLIController do
 
   defp handle_query(conn, %{"follow" => "true"} = params) do
     # Get initial logs
-    :ok = Fog.LogStore.Realtime.subscribe(Fog.LogStore.Realtime.generate_client_id(), params)
+    :ok =
+      Fog.LogStore.Realtime.subscribe(
+        Fog.LogStore.Realtime.generate_client_id(),
+        params |> Map.delete("stream")
+      )
 
     conn =
       conn
@@ -45,7 +49,7 @@ defmodule FogWeb.CLIController do
   defp send_event(conn, event_name, data) do
     chunk = """
     event: #{event_name}
-    data: #{Jason.encode!(data)}
+    data: #{data}
 
     """
 

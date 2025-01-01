@@ -134,6 +134,7 @@ defmodule Fog.LogStore.Realtime do
   end
 
   defp validate_filter_params(params) do
+    Logger.debug("subscribing with params: #{inspect(params)}")
     valid_keys = ~w(key0 key1 since until grep follow limit)
 
     cond do
@@ -176,8 +177,8 @@ defmodule Fog.LogStore.Realtime do
 
   defp matches_time_range?(log_entry, filter_params) do
     timestamp = log_entry.timestamp || raise "nil timestamp. should never happen"
-    since = Map.get(filter_params, "since")
-    until = Map.get(filter_params, "until")
+    {:ok, since} = Fog.LogStore.parse_datetime(Map.get(filter_params, "since"))
+    {:ok, until} = Fog.LogStore.parse_datetime(Map.get(filter_params, "until"))
 
     cond do
       is_nil(since) and is_nil(until) ->
@@ -212,9 +213,9 @@ defmodule Fog.LogStore.Realtime do
   defp parse_timestamp(timestamp) when is_binary(timestamp) do
     case DateTime.from_iso8601(timestamp) do
       {:ok, datetime, _} -> datetime
-      _ -> raise "Invalid timestamp format"
+      _ -> raise "Invalid timestamp format: #{inspect(timestamp)}"
     end
   end
 
-  defp parse_timestamp(timestamp), do: timestamp
+  defp parse_timestamp(%DateTime{} = timestamp), do: timestamp
 end

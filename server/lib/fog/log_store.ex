@@ -39,7 +39,9 @@ defmodule Fog.LogStore do
     })
   end
 
-  defp parse_datetime(input) when is_binary(input) do
+  def parse_datetime(nil), do: {:ok, nil}
+
+  def parse_datetime(input) when is_binary(input) do
     cond do
       String.match?(input, ~r/^\d{4}-\d{2}-\d{2}/) ->
         # ISO8601 format
@@ -82,7 +84,7 @@ defmodule Fog.LogStore do
     {:ok, since} = (params["since"] || DateTime.to_iso8601(now)) |> parse_datetime
 
     file_path = file_for(key0, key1, since)
-    since = since |> DateTime.to_unix()
+    since = since |> DateTime.to_unix(:second)
 
     with {:ok, data} <- File.read(file_path) do
       data
@@ -92,7 +94,7 @@ defmodule Fog.LogStore do
           Logger.warning("no logs found, since=#{since} now=#{now}")
 
         v ->
-          Logger.debug("got #{length(v)} lines, since=#{since} now=#{now}")
+          Logger.debug("got #{length(v)} lines, params=#{inspect(params)}")
           v
       end)
       |> Enum.map(fn line ->
@@ -106,7 +108,7 @@ defmodule Fog.LogStore do
 
             line_timestamp_unix_str = parsed |> Enum.at(1)
             {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
-            logline = parsed |> Enum.slice(1..-1) |> Enum.join("\t")
+            logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
 
             %LogLine{
               key0: key0,

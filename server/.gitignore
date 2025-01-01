@@ -29,3 +29,4 @@ fog-*.tar
 *.db
 *.db-*
 
+./dev-data
