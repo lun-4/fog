@@ -21,7 +21,8 @@ defmodule Fog.LogStore do
     log_path = file_for(key0, key1, now)
     {:ok, file} = File.open(log_path, [:append])
     timestamp = now |> DateTime.to_unix()
-    IO.write(file, "#{timestamp}\t#{line}\n")
+    # <version>\t<timestamp>\t<log itself>
+    IO.write(file, "1\t#{timestamp}\t#{line}\n")
     File.close(file)
   end
 
@@ -77,21 +78,23 @@ defmodule Fog.LogStore do
 
     data
     |> String.split("\n")
-    |> Enum.map(fn
-      "" ->
-        nil
+    |> Enum.map(fn line ->
+      cond do
+        String.starts_with?(line, "1") ->
+          parsed = String.split(line, "\t")
 
-      line ->
-        parsed = String.split(line, "\t")
+          if length(parsed) < 3 do
+            Logger.warning("invalid log line: #{line}")
+          end
 
-        if length(parsed) < 2 do
-          Logger.warning("invalid log line: #{line}")
-        end
+          line_timestamp_unix_str = parsed |> Enum.at(1)
+          {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
+          logline = parsed |> Enum.slice(1..-1) |> Enum.join("\t")
+          %LogLine{timestamp: line_timestamp, text: logline}
 
-        line_timestamp_unix_str = parsed |> Enum.at(0)
-        {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
-        logline = parsed |> Enum.slice(1..-1) |> Enum.join("\t")
-        %LogLine{timestamp: line_timestamp, text: logline}
+        true ->
+          nil
+      end
     end)
     |> Enum.filter(fn
       nil ->
