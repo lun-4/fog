@@ -67,9 +67,12 @@ defmodule Fog.LogStore do
     key0 = params["key0"] || raise "TODO support no key0"
     key1 = params["key1"] || raise "TODO support no key1"
     limit = params["limit"] || raise "missing limit. this is a bug"
+    {limit, ""} = Integer.parse(limit)
 
     # TODO support until
-    {:ok, since} = params["since"] |> parse_datetime
+    # TODO support multiple files (e.g since = nil, means all file under key0/key1)
+    now = DateTime.utc_now() |> DateTime.add(-30, :second)
+    {:ok, since} = (params["since"] || DateTime.to_iso8601(now)) |> parse_datetime
 
     file_path = file_for(key0, key1, since)
     {:ok, data} = File.read(file_path)
@@ -78,6 +81,14 @@ defmodule Fog.LogStore do
 
     data
     |> String.split("\n")
+    |> then(fn
+      [] ->
+        Logger.warning("no logs found, since=#{since} now=#{now}")
+
+      v ->
+        Logger.debug("got #{length(v)} lines, since=#{since} now=#{now}")
+        v
+    end)
     |> Enum.map(fn line ->
       cond do
         String.starts_with?(line, "1") ->
@@ -103,6 +114,6 @@ defmodule Fog.LogStore do
       %LogLine{} = l ->
         l.timestamp > since
     end)
-    |> Enum.slice(0..limit)
+    |> Enum.slice(0..(limit - 1))
   end
 end

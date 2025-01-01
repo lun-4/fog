@@ -134,15 +134,15 @@ defmodule Fog.IntegrationTest do
       Process.sleep(100)
 
       # Query with limit=3
-      response =
+      conn =
         get(conn, ~p"/api/v1/cli/query", %{
           key0: key0,
           key1: key1,
           limit: 3
         })
 
-      assert response.status == 200
-      logs = Jason.decode!(response.body)
+      rjson = json_response(conn, 200)
+      logs = rjson["logs"]
       assert length(logs) == 3
     end
 
