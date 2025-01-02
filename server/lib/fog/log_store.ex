@@ -26,7 +26,7 @@ defmodule Fog.LogStore do
     now = DateTime.utc_now()
     log_path = file_for(key0, key1, now)
     {:ok, file} = File.open(log_path, [:append])
-    timestamp = now |> DateTime.to_unix()
+    timestamp = now |> DateTime.to_unix(:millisecond)
     # <version>\t<timestamp>\t<log itself>
     IO.write(file, "1\t#{timestamp}\t#{line}\n")
     File.close(file)
@@ -84,7 +84,7 @@ defmodule Fog.LogStore do
     {:ok, since} = (params["since"] || DateTime.to_iso8601(now)) |> parse_datetime
 
     file_path = file_for(key0, key1, since)
-    since = since |> DateTime.to_unix(:second)
+    since = since |> DateTime.to_unix(:millisecond)
 
     with {:ok, data} <- File.read(file_path) do
       data
@@ -107,13 +107,13 @@ defmodule Fog.LogStore do
             end
 
             line_timestamp_unix_str = parsed |> Enum.at(1)
-            {line_timestamp, ""} = Integer.parse(line_timestamp_unix_str)
+            {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
             logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
 
             %LogLine{
               key0: key0,
               key1: key1,
-              timestamp: line_timestamp,
+              timestamp: line_timestamp_unix,
               text: logline
             }
 
@@ -129,6 +129,15 @@ defmodule Fog.LogStore do
           l.timestamp > since
       end)
       |> Enum.slice(0..(limit - 1))
+      # reprocess the lines so their timestamps are DateTime instead of ints
+      |> Enum.map(fn line ->
+        %LogLine{
+          key0: line.key0,
+          key1: line.key1,
+          timestamp: DateTime.from_unix!(line.timestamp, :millisecond),
+          text: line.text
+        }
+      end)
       |> then(fn v -> {:ok, v} end)
     end
   end

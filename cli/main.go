@@ -155,6 +155,8 @@ func streamLogs(config Config) error {
 
 	client := sse.NewClient(queryURL)
 
+	fmt.Fprintf(os.Stderr, "Streaming logs...\n")
+
 	// Handle server-sent events
 	err := client.Subscribe("messages", func(event *sse.Event) {
 		var logEntry LogEntry
