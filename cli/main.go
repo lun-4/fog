@@ -19,10 +19,27 @@ type LogEntry struct {
 	Text string `json:"text"`
 }
 
+// Custom flag type to handle multiple -selector flags
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	// Split on commas and trim spaces from each value
+	for _, v := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(v)
+		if trimmed != "" {
+			*s = append(*s, trimmed)
+		}
+	}
+	return nil
+}
+
 type Config struct {
 	serverURL string
-	key0      string
-	key1      string
+	selectors []string
 	since     string
 	until     string
 	grep      string
@@ -55,8 +72,9 @@ func parseFlags() Config {
 	var config Config
 
 	flag.StringVar(&config.serverURL, "server", "", "Log server URL (required)")
-	flag.StringVar(&config.key0, "key0", "", "Comma-separated list of key0 values to filter")
-	flag.StringVar(&config.key1, "key1", "", "Comma-separated list of key1 values to filter")
+	// We'll store multiple -selector flags in a string slice
+	var selectors stringSliceFlag
+	flag.Var(&selectors, "selector", "Selector in the format 'key0.key1' (can be specified multiple times)")
 	flag.StringVar(&config.since, "since", "", "Start time (e.g., '2h', '2024-03-20T15:04:05Z')")
 	flag.StringVar(&config.until, "until", "", "End time (same format as since)")
 	flag.StringVar(&config.grep, "grep", "", "Text to search for in logs")
@@ -64,6 +82,7 @@ func parseFlags() Config {
 	flag.IntVar(&config.limit, "limit", 1000, "Maximum number of logs to return")
 
 	flag.Parse()
+	config.selectors = selectors
 
 	if config.serverURL == "" {
 		fmt.Fprintln(os.Stderr, "Error: server URL is required")
@@ -84,11 +103,10 @@ func validateConfig(config Config) error {
 func buildQueryParams(config Config) url.Values {
 	params := url.Values{}
 
-	if config.key0 != "" {
-		params.Add("key0", config.key0)
-	}
-	if config.key1 != "" {
-		params.Add("key1", config.key1)
+	// Add each selector as a separate query parameter
+	if len(config.selectors) > 0 {
+		fmt.Println("test")
+		params.Add("selectors", strings.Join(config.selectors, ","))
 	}
 	if config.since != "" {
 		params.Add("since", config.since)
@@ -125,7 +143,7 @@ func queryLogs(config Config) error {
 	}
 
 	var response struct {
-		Results []LogEntry `json:"logs"`
+		Logs *[]LogEntry `json:"logs,omitempty"`
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -137,9 +155,13 @@ func queryLogs(config Config) error {
 		return fmt.Errorf("failed to parse JSON response: %v", err)
 	}
 
+	if response.Logs == nil {
+		return fmt.Errorf("no results field given, this is an api error")
+	}
+
 	// Print each log entry
-	fmt.Printf("Got %d logs for %s/%s:\n", len(response.Results), config.key0, config.key1)
-	for _, result := range response.Results {
+	fmt.Printf("Got %d logs:\n", len(*response.Logs))
+	for _, result := range *response.Logs {
 		fmt.Printf("[%s/%s] %s\n", result.Key0, result.Key1, result.Text)
 	}
 

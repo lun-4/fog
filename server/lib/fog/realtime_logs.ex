@@ -135,7 +135,7 @@ defmodule Fog.LogStore.Realtime do
 
   defp validate_filter_params(params) do
     Logger.debug("subscribing with params: #{inspect(params)}")
-    valid_keys = ~w(key0 key1 since until grep follow limit)
+    valid_keys = ~w(selectors since until grep follow limit)
 
     cond do
       not is_map(params) ->
@@ -153,8 +153,7 @@ defmodule Fog.LogStore.Realtime do
   end
 
   defp matches_filter?(log_entry, filter_params) do
-    with true <- matches_key0?(log_entry, filter_params),
-         true <- matches_key1?(log_entry, filter_params),
+    with true <- matches_selectors?(log_entry, filter_params),
          true <- matches_time_range?(log_entry, filter_params),
          true <- matches_grep?(log_entry, filter_params) do
       true
@@ -163,17 +162,8 @@ defmodule Fog.LogStore.Realtime do
     end
   end
 
-  defp matches_key0?(entry, %{"key0" => filter_key0}),
-    do: entry.key0 == filter_key0
-
-  defp matches_key0?(_, %{"key0" => _}), do: false
-  defp matches_key0?(_, _), do: true
-
-  defp matches_key1?(entry, %{"key1" => filter_key1}),
-    do: entry.key1 == filter_key1
-
-  defp matches_key1?(_, %{"key1" => _}), do: false
-  defp matches_key1?(_, _), do: true
+  defp matches_selectors?(entry, %{"selectors" => selectors}),
+    do: Fog.LogStore.matches_selectors?({entry.key0, entry.key1}, selectors)
 
   defp matches_time_range?(log_entry, filter_params) do
     timestamp = log_entry.timestamp || raise "nil timestamp. should never happen"

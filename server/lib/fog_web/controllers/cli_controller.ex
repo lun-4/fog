@@ -9,16 +9,23 @@ defmodule FogWeb.CLIController do
       |> put_status(400)
       |> json(%{error: "follow and until parameters are incompatible"})
     else
-      params = Map.put(params, "limit", Map.get(params, "limit", "1000"))
+      params =
+        params
+        |> Map.put("limit", Map.get(params, "limit", "1000"))
+        |> Map.put("selectors", Map.get(params, "selectors", "*.*") |> String.split(","))
+
       handle_query(conn, params)
     end
   end
 
   defp handle_query(conn, %{"follow" => "true"} = params) do
     # Get initial logs
+
+    client_id = Fog.LogStore.Realtime.generate_client_id()
+
     :ok =
       Fog.LogStore.Realtime.subscribe(
-        Fog.LogStore.Realtime.generate_client_id(),
+        client_id,
         params |> Map.delete("stream")
       )
 
@@ -38,7 +45,7 @@ defmodule FogWeb.CLIController do
       end
 
     conn
-    |> stream_new_logs()
+    |> stream_new_logs(client_id)
   end
 
   defp handle_query(conn, params) do
@@ -65,18 +72,22 @@ defmodule FogWeb.CLIController do
     end)
   end
 
-  defp stream_new_logs(conn) do
+  defp stream_new_logs(conn, client_id) do
     receive do
       {:log_entry, _, log} ->
         case send_event(conn, "log", Jason.encode!(log)) do
-          {:ok, conn} -> stream_new_logs(conn)
-          {:error, :closed} -> conn
+          {:ok, conn} ->
+            stream_new_logs(conn, client_id)
+
+          {:error, :closed} ->
+            :ok = Fog.LogStore.Realtime.unsubscribe(client_id)
+            conn
         end
 
       # Handle other messages as needed
       v ->
         Logger.warning("unknown message from follow setup: #{inspect(v)}")
-        stream_new_logs(conn)
+        stream_new_logs(conn, client_id)
     end
   end
 end

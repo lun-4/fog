@@ -48,7 +48,7 @@ defmodule Fog.IntegrationTest do
     Logger.info("Test data path is #{data_path}")
     :ok = Application.put_env(:fog, Fog.LogStore, data_path: data_path)
     # Configure test agent credentials
-    key0 = "test.host"
+    key0 = "test_host"
     key1 = "test_service"
     test_log = "sample log entry #{System.system_time(:second)}"
 
@@ -91,8 +91,7 @@ defmodule Fog.IntegrationTest do
 
       conn =
         get(conn, ~p"/api/v1/cli/query", %{
-          key0: key0,
-          key1: key1,
+          selectors: "#{key0}.#{key1}",
           since: "1h"
         })
 
@@ -136,8 +135,7 @@ defmodule Fog.IntegrationTest do
       # Query with limit=3
       conn =
         get(conn, ~p"/api/v1/cli/query", %{
-          key0: key0,
-          key1: key1,
+          selectors: "#{key0}.#{key1}",
           limit: 3
         })
 
@@ -164,8 +162,7 @@ defmodule Fog.IntegrationTest do
               url,
               [{"Accept", "text/event-stream"}],
               params: %{
-                key0: key0,
-                key1: key1,
+                selectors: "#{key0}.#{key1}",
                 follow: true,
                 # Get last 2 lines initially
                 limit: 2
