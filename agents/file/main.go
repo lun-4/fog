@@ -52,6 +52,8 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 	}
 }
 
+// TODO write test suite
+// TODO support log rotation on the file agent is watching
 func (a *Agent) connect() error {
 	a.reconnectMux.Lock()
 	defer a.reconnectMux.Unlock()
