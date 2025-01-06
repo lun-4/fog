@@ -61,6 +61,7 @@ func (a *Agent) connect() error {
 	if a.isConnected {
 		return nil
 	}
+	log.Println("connecting...")
 
 	wsURL := fmt.Sprintf("%s/api/v1/agent/ws?token=%s", a.serverURL, a.token)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -80,6 +81,7 @@ func (a *Agent) connect() error {
 		return fmt.Errorf("expected hello message, got: %s", msg.Op)
 	}
 
+	log.Println("connected!")
 	a.conn = conn
 	a.isConnected = true
 	return nil
@@ -89,14 +91,20 @@ func (a *Agent) disconnect() {
 	a.reconnectMux.Lock()
 	defer a.reconnectMux.Unlock()
 
+	log.Println("disconnecting")
+
 	if a.conn != nil {
-		a.conn.Close()
+		err := a.conn.Close()
+		if err != nil {
+			log.Printf("Disconnect failed (ignoring error): %v", err)
+		}
 		a.conn = nil
 	}
 	a.isConnected = false
 }
 
 func (a *Agent) reconnect() {
+	log.Println("reconnecting..")
 	for {
 		err := a.connect()
 		if err == nil {
@@ -115,6 +123,7 @@ func (a *Agent) handleWebSocket() {
 	for {
 		select {
 		case <-a.done:
+			log.Println("websocket handling function exit")
 			return
 
 		case msg := <-a.sendChan:
@@ -152,6 +161,7 @@ func (a *Agent) handleServerMessages() {
 			return
 		default:
 			if !a.isConnected {
+				log.Println("waiting for reconnection...")
 				time.Sleep(time.Second)
 				continue
 			}
@@ -159,7 +169,7 @@ func (a *Agent) handleServerMessages() {
 			var msg Message
 			err := a.conn.ReadJSON(&msg)
 			if err != nil {
-				log.Printf("Read error: %v", err)
+				log.Printf("Read error, disconnecting: %v", err)
 				a.disconnect()
 				continue
 			}
