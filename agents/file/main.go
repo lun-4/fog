@@ -28,31 +28,34 @@ type LogData struct {
 }
 
 type Agent struct {
-	serverURL    string
-	token        string
-	logFile      string
-	key0         string
-	key1         string
-	conn         *websocket.Conn
-	sendChan     chan Message
-	done         chan struct{}
-	reconnectMux sync.Mutex
-	isConnected  bool
+	serverURL       string
+	token           string
+	logFile         string
+	key0            string
+	key1            string
+	conn            *websocket.Conn
+	sendChan        chan Message
+	done            chan struct{}
+	reconnectMux    sync.Mutex
+	isConnected     bool
+	setupFileWatch  chan error
+	heartbeatPeriod time.Duration
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 	return &Agent{
-		serverURL: serverURL,
-		token:     token,
-		logFile:   logFile,
-		key0:      key0,
-		key1:      key1,
-		sendChan:  make(chan Message, 100),
-		done:      make(chan struct{}),
+		serverURL:       serverURL,
+		token:           token,
+		logFile:         logFile,
+		key0:            key0,
+		key1:            key1,
+		sendChan:        make(chan Message, 100),
+		done:            make(chan struct{}),
+		setupFileWatch:  make(chan error, 1),
+		heartbeatPeriod: 5 * time.Second,
 	}
 }
 
-// TODO write test suite
 // TODO support log rotation on the file agent is watching
 func (a *Agent) connect() error {
 	a.reconnectMux.Lock()
@@ -117,7 +120,7 @@ func (a *Agent) reconnect() {
 }
 
 func (a *Agent) handleWebSocket() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(a.heartbeatPeriod)
 	defer ticker.Stop()
 
 	for {
@@ -151,6 +154,21 @@ func (a *Agent) handleWebSocket() {
 				continue
 			}
 		}
+	}
+}
+
+func (a *Agent) Setup() error {
+	go a.handleWebSocket()
+	go a.handleServerMessages()
+	go func() {
+		err := a.watchFile()
+		a.setupFileWatch <- err
+	}()
+	select {
+	case err := <-a.setupFileWatch:
+		return err
+	case <-time.After(5 * time.Second):
+		panic("Agent setup possibly failed")
 	}
 }
 
@@ -217,6 +235,8 @@ func (a *Agent) watchFile() error {
 
 	// Create a buffered reader for line-by-line reading
 	reader := bufio.NewReader(file)
+
+	a.setupFileWatch <- nil
 
 	for {
 		select {

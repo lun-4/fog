@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,8 +20,6 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-type MessageHandler func(msg Message) bool
-
 type TestServer struct {
 	*httptest.Server
 	ConnectedClients map[*websocket.Conn]bool
@@ -30,17 +27,15 @@ type TestServer struct {
 	ClientsLock      sync.Mutex
 	LogsLock         sync.Mutex
 
-	// Message handling
-	handler     MessageHandler
-	handlerLock sync.Mutex
-	msgChan     chan Message
+	// Channel for tests to receive messages
+	Messages chan Message
 }
 
 func NewTestServer(t *testing.T) *TestServer {
 	ts := &TestServer{
 		ConnectedClients: make(map[*websocket.Conn]bool),
 		ReceivedLogs:     make([]LogData, 0),
-		msgChan:          make(chan Message, 100),
+		Messages:         make(chan Message, 100), // Buffered channel to prevent blocking
 	}
 
 	ts.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,23 +73,7 @@ func NewTestServer(t *testing.T) *TestServer {
 		go ts.handleClient(t, conn)
 	}))
 
-	// Start message processing
-	go ts.processMessages()
-
 	return ts
-}
-
-func (ts *TestServer) processMessages() {
-	for msg := range ts.msgChan {
-		ts.handlerLock.Lock()
-		if handler := ts.handler; handler != nil {
-			if handler(msg) {
-				// Clear handler after it matches
-				ts.handler = nil
-			}
-		}
-		ts.handlerLock.Unlock()
-	}
 }
 
 func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
@@ -115,8 +94,8 @@ func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 			return
 		}
 
-		// Send message to channel for processing
-		ts.msgChan <- msg
+		// Send message to channel for test consumption
+		ts.Messages <- msg
 
 		// Handle default behaviors
 		switch msg.Op {
@@ -141,33 +120,14 @@ func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-// WaitForMessage waits for a message that satisfies the given handler function
-func (ts *TestServer) WaitForMessage(handler MessageHandler, timeout time.Duration) error {
-	done := make(chan bool)
-
-	ts.handlerLock.Lock()
-	if ts.handler != nil {
-		ts.handlerLock.Unlock()
-		return fmt.Errorf("handler already set")
+func (ts *TestServer) Close() error {
+	err := ts.CloseClients()
+	if err != nil {
+		return fmt.Errorf("error closing clients: %w", err)
 	}
-	ts.handler = func(msg Message) bool {
-		if handler(msg) {
-			done <- true
-			return true
-		}
-		return false
-	}
-	ts.handlerLock.Unlock()
-
-	select {
-	case <-done:
-		return nil
-	case <-time.After(timeout):
-		ts.handlerLock.Lock()
-		ts.handler = nil
-		ts.handlerLock.Unlock()
-		return fmt.Errorf("timeout waiting for message")
-	}
+	ts.Server.Close()
+	close(ts.Messages)
+	return nil
 }
 
 func (ts *TestServer) CloseClients() error {
@@ -218,32 +178,49 @@ func TestAgentConnection(t *testing.T) {
 	assert.Equal(t, 1, ts.GetClientCount())
 }
 
+func (ts *TestServer) FetchOneMessage(t *testing.T, maybeTimeout *time.Duration) Message {
+	timeout := 5 * time.Second
+	if maybeTimeout != nil {
+		timeout = *maybeTimeout
+	}
+	select {
+	case msg := <-ts.Messages:
+		return msg
+	case <-time.After(timeout):
+		require.FailNow(t, "timeout waiting for message")
+		return Message{}
+	}
+}
+
 func TestAgentReconnection(t *testing.T) {
 	ts := NewTestServer(t)
 	defer ts.Close()
 
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "test.log")
+	err := os.WriteFile(logFile, []byte(""), 0644)
+	require.NoError(t, err)
+
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	agent := NewAgent(wsURL, "test-token", "testlog.txt", "test-host", "test-service")
+	agent := NewAgent(wsURL, "test-token", logFile, "test-host", "test-service")
+	agent.heartbeatPeriod = 200 * time.Millisecond
 
 	// Initial connection
-	err := agent.connect()
+	err = agent.connect()
 	require.NoError(t, err)
-	go agent.handleServerMessages()
+	require.NoError(t, agent.Setup())
 
 	// Force disconnect
 	require.NoError(t, ts.CloseClients())
 	agent.sendChan <- Message{}
-	time.Sleep(100 * time.Millisecond)
-	require.False(t, agent.isConnected)
 
 	// Test reconnection
-	go agent.handleWebSocket()
+	// go agent.handleWebSocket()
 
-	// Wait for reconnection using WaitForMessage
-	err = ts.WaitForMessage(func(msg Message) bool {
-		return msg.Op == "heartbeat" // First heartbeat after reconnection
-	}, 6*time.Second)
-	require.NoError(t, err)
+	// Wait for heartbeat message after reconnection
+	dur := 1 * time.Second
+	msg := ts.FetchOneMessage(t, &dur)
+	require.Equal(t, "heartbeat", msg.Op)
 
 	require.True(t, agent.isConnected)
 	require.Equal(t, 1, ts.GetClientCount())
@@ -267,30 +244,18 @@ func TestLogSending(t *testing.T) {
 	require.NoError(t, err)
 	defer agent.disconnect()
 
-	go agent.handleWebSocket()
-	go agent.handleServerMessages()
-	go agent.watchFile()
-
-	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, agent.Setup())
 
 	// Write to log file and wait for the message
 	testLog := "test log entry"
 	err = os.WriteFile(logFile, []byte(testLog+"\n"), 0644)
 	require.NoError(t, err)
 
-	log.Println("waiting")
-	time.Sleep(100 * time.Millisecond)
-
-	// err = ts.WaitForMessage(func(msg Message) bool {
-	// 	if msg.Op != "send" {
-	// 		return false
-	// 	}
-	// 	if data, ok := msg.Data.(map[string]interface{}); ok {
-	// 		return data["data"].(string) == testLog
-	// 	}
-	// 	return false
-	// }, 5*time.Second)
-	// require.NoError(t, err)
+	// Wait for the send message
+	msg := ts.FetchOneMessage(t, nil)
+	require.Equal(t, "send", msg.Op)
+	data := msg.Data.(map[string]interface{})
+	require.Equal(t, testLog, data["data"])
 
 	// Verify log was received
 	logs := ts.GetReceivedLogs()
@@ -311,14 +276,13 @@ func TestHeartbeat(t *testing.T) {
 	require.NoError(t, err)
 	defer agent.disconnect()
 
-	// Send heartbeat and wait for ack
+	// Send heartbeat
 	err = agent.conn.WriteJSON(Message{Op: "heartbeat"})
 	require.NoError(t, err)
 
-	err = ts.WaitForMessage(func(msg Message) bool {
-		return msg.Op == "heartbeat_ack"
-	}, 5*time.Second)
-	require.NoError(t, err)
+	// Wait for heartbeat ack
+	msg := ts.FetchOneMessage(t, nil)
+	require.Equal(t, "heartbeat_ack", msg.Op)
 }
 
 func TestInvalidToken(t *testing.T) {
