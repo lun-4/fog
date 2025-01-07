@@ -40,21 +40,19 @@ func NewTestServer(t *testing.T) *TestServer {
 
 	ts.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/agent/ws") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 
 		token := r.URL.Query().Get("token")
 		if token != "test-token" {
-			t.Errorf("unexpected token: %s", token)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Errorf("websocket upgrade error: %v", err)
+			http.Error(w, "upgrade error", http.StatusInternalServerError)
 			return
 		}
 
@@ -65,7 +63,7 @@ func NewTestServer(t *testing.T) *TestServer {
 		// Send HELLO message
 		err = conn.WriteJSON(Message{Op: "hello"})
 		if err != nil {
-			t.Errorf("failed to send hello: %v", err)
+			http.Error(w, "failed to send hello", http.StatusInternalServerError)
 			return
 		}
 
@@ -95,6 +93,7 @@ func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 		}
 
 		// Send message to channel for test consumption
+		fmt.Println("got from ts", msg.Op)
 		ts.Messages <- msg
 
 		// Handle default behaviors
@@ -214,11 +213,11 @@ func TestAgentReconnection(t *testing.T) {
 	require.NoError(t, ts.CloseClients())
 	agent.sendChan <- Message{}
 
-	// Test reconnection
-	// go agent.handleWebSocket()
+	// agent should be reconnecting immediately, and due to heartbeat period configured to 200ms
+	// that means we should get a heartbeat practically immediately as well
 
 	// Wait for heartbeat message after reconnection
-	dur := 1 * time.Second
+	dur := 800 * time.Millisecond
 	msg := ts.FetchOneMessage(t, &dur)
 	require.Equal(t, "heartbeat", msg.Op)
 
@@ -269,20 +268,25 @@ func TestHeartbeat(t *testing.T) {
 	ts := NewTestServer(t)
 	defer ts.Close()
 
-	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	agent := NewAgent(wsURL, "test-token", "testlog.txt", "test-host", "test-service")
+	// Create temporary log file
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "test.log")
+	err := os.WriteFile(logFile, []byte(""), 0644)
+	require.NoError(t, err)
 
-	err := agent.connect()
+	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
+	agent := NewAgent(wsURL, "test-token", logFile, "test-host", "test-service")
+	agent.heartbeatPeriod = 10 * time.Millisecond
+
+	// Connect and start handlers
+	err = agent.connect()
 	require.NoError(t, err)
 	defer agent.disconnect()
 
-	// Send heartbeat
-	err = agent.conn.WriteJSON(Message{Op: "heartbeat"})
-	require.NoError(t, err)
+	require.NoError(t, agent.Setup())
 
-	// Wait for heartbeat ack
 	msg := ts.FetchOneMessage(t, nil)
-	require.Equal(t, "heartbeat_ack", msg.Op)
+	require.Equal(t, "heartbeat", msg.Op)
 }
 
 func TestInvalidToken(t *testing.T) {
@@ -293,6 +297,6 @@ func TestInvalidToken(t *testing.T) {
 	agent := NewAgent(wsURL, "invalid-token", "testlog.txt", "test-host", "test-service")
 
 	err := agent.connect()
-	assert.Error(t, err)
-	assert.False(t, agent.isConnected)
+	require.Error(t, err)
+	require.False(t, agent.isConnected)
 }
