@@ -42,6 +42,7 @@ defmodule Fog.Authentication do
     |> Repo.insert()
   end
 
+  @spec create_random(String.t()) :: {:ok, Token.t()} | {:error, Ecto.Changeset.t()}
   def create_random(description) do
     %Token{}
     |> Token.changeset(%{
@@ -89,8 +90,8 @@ defmodule Fog.Authentication do
     |> Repo.all()
   end
 
-  @spec one(String.t()) :: Token.t() | nil
+  @spec one(String.t()) :: {:ok, Token.t() | nil}
   def one(token) do
-    Repo.get_by(Token, token: token)
+    {:ok, Repo.one(from(t in Token, where: t.token == ^token))}
   end
 end

@@ -40,7 +40,7 @@ defmodule FogWeb.AgentSocket do
     if given_token == nil do
       {:stop, :normal, {4000, "missing token"}, state}
     else
-      maybe_token = Fog.Authentication.one(given_token)
+      {:ok, maybe_token} = Fog.Authentication.one(given_token)
 
       if maybe_token == nil do
         {:stop, :normal, {4001, "invalid token"}, state}

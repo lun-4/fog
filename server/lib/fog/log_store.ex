@@ -212,6 +212,7 @@ defmodule Fog.LogStore do
     with {:ok, data} <- File.read(file_path) do
       data
       |> String.split("\n")
+      # TODO grep support
       |> then(fn
         [] ->
           Logger.warning("no logs found, since=#{since}")

@@ -45,10 +45,13 @@ type Config struct {
 	grep      string
 	follow    bool
 	limit     int
+	token     string
 }
 
 func main() {
+	token := os.Getenv("FOG_TOKEN")
 	config := parseFlags()
+	config.token = token
 
 	if err := validateConfig(config); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -105,7 +108,6 @@ func buildQueryParams(config Config) url.Values {
 
 	// Add each selector as a separate query parameter
 	if len(config.selectors) > 0 {
-		fmt.Println("test")
 		params.Add("selectors", strings.Join(config.selectors, ","))
 	}
 	if config.since != "" {
@@ -132,7 +134,9 @@ func queryLogs(config Config) error {
 		strings.TrimSuffix(config.serverURL, "/"),
 		params.Encode())
 
-	resp, err := http.Get(queryURL)
+	req, err := http.NewRequest("GET", queryURL, nil)
+	req.Header.Set("authorization", "Bearer "+config.token)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to query logs: %v", err)
 	}
@@ -176,6 +180,7 @@ func streamLogs(config Config) error {
 		params.Encode())
 
 	client := sse.NewClient(queryURL)
+	client.Headers["authorization"] = "Bearer " + config.token
 
 	fmt.Fprintf(os.Stderr, "Streaming logs...\n")
 

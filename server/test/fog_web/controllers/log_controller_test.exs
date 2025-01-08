@@ -75,8 +75,13 @@ defmodule Fog.IntegrationTest do
      }}
   end
 
+  defp auth_header(conn, token) do
+    put_req_header(conn, "authorization", "Bearer #{token}")
+  end
+
   describe "agent websocket connection and cli query" do
     test "complete flow: connect, send logs, query via HTTP", %{
+      token: token,
       client: client,
       key0: key0,
       key1: key1,
@@ -90,7 +95,9 @@ defmodule Fog.IntegrationTest do
       Process.sleep(100)
 
       conn =
-        get(conn, ~p"/api/v1/cli/query", %{
+        conn
+        |> auth_header(token)
+        |> get(~p"/api/v1/cli/query", %{
           selectors: "#{key0}.#{key1}",
           since: "1h"
         })
@@ -109,9 +116,11 @@ defmodule Fog.IntegrationTest do
       assert_receive {:ws_message, %{"op" => "heartbeat_ack"}}, 1000
     end
 
-    test "cli query with invalid follow/until combination", %{conn: conn} do
+    test "cli query with invalid follow/until combination", %{conn: conn, token: token} do
       response =
-        get(conn, ~p"/api/v1/cli/query", %{
+        conn
+        |> auth_header(token)
+        |> get(~p"/api/v1/cli/query", %{
           follow: true,
           until: "2024-03-20T15:04:05Z"
         })
@@ -121,6 +130,7 @@ defmodule Fog.IntegrationTest do
 
     test "cli query respects limit parameter", %{
       client: client,
+      token: token,
       key0: key0,
       key1: key1,
       conn: conn
@@ -134,7 +144,9 @@ defmodule Fog.IntegrationTest do
 
       # Query with limit=3
       conn =
-        get(conn, ~p"/api/v1/cli/query", %{
+        conn
+        |> auth_header(token)
+        |> get(~p"/api/v1/cli/query", %{
           selectors: "#{key0}.#{key1}",
           limit: 3
         })
@@ -146,6 +158,7 @@ defmodule Fog.IntegrationTest do
 
     test "cli query with follow (SSE)", %{
       client: client,
+      token: token,
       key0: key0,
       key1: key1,
       base_url: base_url
@@ -160,7 +173,7 @@ defmodule Fog.IntegrationTest do
           resp =
             HTTPoison.get!(
               url,
-              [{"Accept", "text/event-stream"}],
+              [{"Accept", "text/event-stream"}, {"Authorization", "Bearer #{token}"}],
               params: %{
                 selectors: "#{key0}.#{key1}",
                 follow: true,

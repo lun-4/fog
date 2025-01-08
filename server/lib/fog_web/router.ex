@@ -13,6 +13,7 @@ defmodule FogWeb.Router do
   pipeline :api do
     # TODO why doesnt this work with accept: text/event-stream
     # plug(:accepts, ["json", "text/event-stream"])
+    plug(FogWeb.AuthPlug)
   end
 
   scope "/api/v1", FogWeb do
