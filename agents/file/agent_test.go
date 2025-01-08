@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,6 +75,10 @@ func NewTestServer(t *testing.T) *TestServer {
 	return ts
 }
 
+func (ts *TestServer) Debug(format string, args ...interface{}) {
+	log.Printf("[DEBUG] "+format, args...)
+}
+
 func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 	defer func() {
 		ts.ClientsLock.Lock()
@@ -93,7 +98,7 @@ func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 		}
 
 		// Send message to channel for test consumption
-		fmt.Println("got from ts", msg.Op)
+		ts.Debug("received from agent: %v", msg)
 		ts.Messages <- msg
 
 		// Handle default behaviors
@@ -182,6 +187,7 @@ func (ts *TestServer) FetchOneMessage(t *testing.T, maybeTimeout *time.Duration)
 	if maybeTimeout != nil {
 		timeout = *maybeTimeout
 	}
+	ts.Debug("waiting for message...")
 	select {
 	case msg := <-ts.Messages:
 		return msg
@@ -299,4 +305,80 @@ func TestInvalidToken(t *testing.T) {
 	err := agent.connect()
 	require.Error(t, err)
 	require.False(t, agent.isConnected)
+}
+
+func TestLogRotation(t *testing.T) {
+	ts := NewTestServer(t)
+	defer ts.Close()
+
+	// Create temporary log file
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "test.log")
+	fd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	require.NoError(t, err)
+	defer fd.Close()
+	_, err = fd.Write([]byte("initial\n"))
+	require.NoError(t, err)
+
+	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
+	agent := NewAgent(wsURL, "test-token", logFile, "test-host", "test-service")
+	agent.DebugMode = true
+
+	// Connect and start handlers
+	err = agent.connect()
+	require.NoError(t, err)
+	defer agent.disconnect()
+
+	require.NoError(t, agent.Setup())
+
+	_, err = fd.Write([]byte("initial log entry\n"))
+	require.NoError(t, err)
+
+	// Wait for initial log entry to be sent
+	msg := ts.FetchOneMessage(t, nil)
+	require.Equal(t, "send", msg.Op)
+	data := msg.Data.(map[string]interface{})
+	require.Equal(t, "initial log entry", data["data"])
+
+	// Write some content to be caught in rotation
+	_, err = fd.Write([]byte("last entry before rotation\n"))
+	require.NoError(t, err)
+
+	// Wait for the last entry to be sent
+	msg = ts.FetchOneMessage(t, nil)
+	require.Equal(t, "send", msg.Op)
+	data = msg.Data.(map[string]interface{})
+	require.Equal(t, "last entry before rotation", data["data"])
+
+	// Perform log rotation
+	now := time.Now()
+	rotatedName := filepath.Join(tmpDir, fmt.Sprintf("test-%d-%02d-%02d.log",
+		now.Year(), now.Month(), now.Day()))
+
+	err = os.Rename(logFile, rotatedName)
+	require.NoError(t, err)
+
+	// Create new log file
+	_, err = fd.Write([]byte("first entry after rotation\n"))
+	require.NoError(t, err)
+
+	// Wait for the first entry in new file to be sent
+	msg = ts.FetchOneMessage(t, nil)
+	require.Equal(t, "send", msg.Op)
+	data = msg.Data.(map[string]interface{})
+	require.Equal(t, "first entry after rotation", data["data"])
+
+	// Verify all logs were received in order
+	logs := ts.GetReceivedLogs()
+	require.Len(t, logs, 3)
+
+	assert.Equal(t, "initial log entry", logs[0].Data)
+	assert.Equal(t, "last entry before rotation", logs[1].Data)
+	assert.Equal(t, "first entry after rotation", logs[2].Data)
+
+	// Verify all logs have correct metadata
+	for _, log := range logs {
+		assert.Equal(t, "test-host", log.Key0)
+		assert.Equal(t, "test-service", log.Key1)
+	}
 }

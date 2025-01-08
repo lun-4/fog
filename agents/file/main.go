@@ -40,6 +40,7 @@ type Agent struct {
 	isConnected     bool
 	setupFileWatch  chan error
 	heartbeatPeriod time.Duration
+	DebugMode       bool
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
@@ -53,6 +54,13 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 		done:            make(chan struct{}),
 		setupFileWatch:  make(chan error, 1),
 		heartbeatPeriod: 5 * time.Second,
+		DebugMode:       false,
+	}
+}
+
+func (a *Agent) Debug(fmt string, args ...any) {
+	if a.DebugMode {
+		log.Printf(fmt, args...)
 	}
 }
 
@@ -67,6 +75,7 @@ func (a *Agent) connect() error {
 	log.Println("connecting...")
 
 	wsURL := fmt.Sprintf("%s/api/v1/agent/ws?token=%s", a.serverURL, a.token)
+	a.Debug("connecting to %s", wsURL)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial error: %v", err)
@@ -84,6 +93,7 @@ func (a *Agent) connect() error {
 		return fmt.Errorf("expected hello message, got: %s", msg.Op)
 	}
 
+	a.Debug("received hello data: %v", msg)
 	log.Println("connected!")
 	a.conn = conn
 	a.isConnected = true
@@ -130,6 +140,7 @@ func (a *Agent) handleWebSocket() {
 			return
 
 		case msg := <-a.sendChan:
+			a.Debug("sending data: %v", msg)
 			if !a.isConnected {
 				a.reconnect()
 			}
@@ -146,6 +157,7 @@ func (a *Agent) handleWebSocket() {
 				continue
 			}
 
+			a.Debug("sending heartbeat")
 			err := a.conn.WriteJSON(Message{Op: "heartbeat"})
 			if err != nil {
 				log.Printf("Heartbeat write error: %v", err)
@@ -192,6 +204,7 @@ func (a *Agent) handleServerMessages() {
 				continue
 			}
 
+			a.Debug("received message %v", msg)
 			switch msg.Op {
 			case "heartbeat":
 				err := a.conn.WriteJSON(Message{Op: "heartbeat_ack"})
