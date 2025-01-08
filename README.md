@@ -27,12 +27,16 @@ make
 
 # build server component
 cd server
-mix deps.get
-env MIX_ENV=prod mix compile
-env MIX_ENV=prod mix fog.token create "my agents"
-env MIX_ENV=prod mix fog.token create "myself"
+export MIX_ENV=prod
+export FOG_DATA_PATH=/lots/of/storage/fog-logs
 
-env MIX_ENV=prod FOG_DATA_PATH=/lots/of/storage/fog-logs mix phx.server
+# download deps, compile, setup db
+mix setup
+# create your own tokens
+mix fog.token create "my agents"
+mix fog.token create "myself"
+# run server -- must be MIX_ENV=prod with FOG_DATA_PATH
+mix phx.server
 
 # spin agent somewhere
 export FOG_TOKEN=12384837597_tokenforagent
