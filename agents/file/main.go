@@ -173,7 +173,7 @@ func (a *Agent) Setup() error {
 	go a.handleWebSocket()
 	go a.handleServerMessages()
 	go func() {
-		err := a.watchFile()
+		err := a.watchFile(false)
 		a.setupFileWatch <- err
 	}()
 	select {
@@ -221,7 +221,8 @@ func (a *Agent) handleServerMessages() {
 	}
 }
 
-func (a *Agent) watchFile() error {
+func (a *Agent) watchFile(readFromBeginning bool) error {
+	a.Debug("setting up watchFile on %v", a.logFile)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("new watcher error: %v", err)
@@ -241,15 +242,28 @@ func (a *Agent) watchFile() error {
 	defer file.Close()
 
 	// Seek to end of file
-	_, err = file.Seek(0, 2)
-	if err != nil {
-		return fmt.Errorf("seek error: %v", err)
+	if readFromBeginning {
+		_, err = file.Seek(0, 0)
+		if err != nil {
+			return fmt.Errorf("seek error: %v", err)
+		}
+	} else {
+		_, err = file.Seek(0, 2)
+		if err != nil {
+			return fmt.Errorf("seek error: %v", err)
+		}
 	}
 
 	// Create a buffered reader for line-by-line reading
 	reader := bufio.NewReader(file)
 
+	log.Println("setup file watch on", a.logFile)
 	a.setupFileWatch <- nil
+
+	if readFromBeginning {
+		a.Debug("readFromBeginning is set! reading everything from %v", a.logFile)
+		a.readAndSend(reader)
+	}
 
 	for {
 		select {
@@ -257,35 +271,52 @@ func (a *Agent) watchFile() error {
 			return nil
 
 		case event := <-watcher.Events:
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				for {
-					// Read until next newline
-					line, err := reader.ReadString('\n')
-					if err == io.EOF {
-						break
-					}
+			a.Debug("got event from fsnotify: %v", event)
+			if event.Has(fsnotify.Write) {
+				a.readAndSend(reader)
+			} else if event.Has(fsnotify.Rename) {
+				log.Println("currently watched file was renamed, finishing current file then switching to path again")
+				// finish reading from current file
+				a.readAndSend(reader)
+				// spawn another goroutine so it sets itself up on path
+				go func() {
+					err := a.watchFile(true)
 					if err != nil {
-						log.Printf("Read error: %v", err)
-						break
+						log.Panicf("File watch error: %v", err)
 					}
-
-					// Remove trailing newline if present
-					line = strings.TrimRight(line, "\r\n")
-
-					// Send the complete line
-					a.sendChan <- Message{
-						Op: "send",
-						Data: LogData{
-							Key0: a.key0,
-							Key1: a.key1,
-							Data: line,
-						},
-					}
-				}
+				}()
+				// stop ourselves
+				return nil
 			}
-
 		case err := <-watcher.Errors:
 			log.Printf("Watcher error: %v", err)
+		}
+	}
+}
+
+func (a *Agent) readAndSend(reader *bufio.Reader) {
+	for {
+		// Read until next newline
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Read error: %v", err)
+			break
+		}
+
+		// Remove trailing newline if present
+		line = strings.TrimRight(line, "\r\n")
+
+		// Send the complete line
+		a.sendChan <- Message{
+			Op: "send",
+			Data: LogData{
+				Key0: a.key0,
+				Key1: a.key1,
+				Data: line,
+			},
 		}
 	}
 }
@@ -311,17 +342,10 @@ func main() {
 		log.Fatal("Initial connection failed:", err)
 	}
 
-	// Start WebSocket handlers
-	go agent.handleWebSocket()
-	go agent.handleServerMessages()
-
-	// Start file watching
-	go func() {
-		err := agent.watchFile()
-		if err != nil {
-			log.Printf("File watch error: %v", err)
-		}
-	}()
+	err = agent.Setup()
+	if err != nil {
+		log.Panicf("agent setup error: %v", err)
+	}
 
 	// Wait for interrupt
 	interrupt := make(chan os.Signal, 1)

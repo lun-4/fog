@@ -317,6 +317,7 @@ func TestLogRotation(t *testing.T) {
 	fd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	require.NoError(t, err)
 	defer fd.Close()
+
 	_, err = fd.Write([]byte("initial\n"))
 	require.NoError(t, err)
 
@@ -359,7 +360,10 @@ func TestLogRotation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create new log file
-	_, err = fd.Write([]byte("first entry after rotation\n"))
+	rotatedFd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	require.NoError(t, err)
+	defer rotatedFd.Close()
+	_, err = rotatedFd.Write([]byte("first entry after rotation\n"))
 	require.NoError(t, err)
 
 	// Wait for the first entry in new file to be sent
