@@ -29,20 +29,24 @@ make
 cd server
 export MIX_ENV=prod
 export FOG_DATA_PATH=/lots/of/storage/fog-logs
+export DATABASE_PATH=/small/amounts/of/storage/fog.db
 
-# download deps, compile, setup db
+mix deps.get
+mix phx.gen.secret
+export SECRET_KEY_BASE=value_you_got_from_phx_gen_secret
+# setup db
 mix setup
 # create your own tokens
 mix fog.token create "my agents"
 mix fog.token create "myself"
-# run server -- must be MIX_ENV=prod with FOG_DATA_PATH
+# run server -- should be MIX_ENV=prod for production workloads
 mix phx.server
 
-# spin agent somewhere
+# --- agent
 export FOG_TOKEN=12384837597_tokenforagent
 ./bin/fog-agent-file -token $FOG_TOKEN -server ws://server.com:4087 -file /mylog.txt -key0 server0 -key1 service1
 
-
+# --- cli
 export FOG_TOKEN=81375982379_tokenforself
 
 # fetch logs now
