@@ -222,7 +222,7 @@ defmodule Fog.LogStore do
 
     initial_files
     |> Enum.flat_map(fn {_, _, descriptor, file_path} ->
-      {:ok, lines} = read_log_lines(descriptor, file_path, since, until)
+      {:ok, lines} = read_log_lines(descriptor, file_path, since, until, params["grep"])
       lines
     end)
     |> Enum.sort_by(fn line -> line.timestamp end, :asc)
@@ -239,13 +239,12 @@ defmodule Fog.LogStore do
     |> then(fn v -> {:ok, v} end)
   end
 
-  defp read_log_lines({key0, key1}, {_, file_path}, since, until) do
+  defp read_log_lines({key0, key1}, {_, file_path}, since, until, grep) do
     Logger.debug("querying file #{file_path}")
 
     with {:ok, data} <- File.read(file_path) do
       data
       |> String.split("\n")
-      # TODO grep support
       |> then(fn
         [] ->
           Logger.warning("no logs found, since=#{since} until=#{inspect(until)}")
@@ -258,6 +257,9 @@ defmodule Fog.LogStore do
         cond do
           line == "" ->
             Logger.warning("empty line in #{inspect(file_path)}")
+            nil
+
+          grep != nil and not String.contains?(line, grep) ->
             nil
 
           # storage format v1

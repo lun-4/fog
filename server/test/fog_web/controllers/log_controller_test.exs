@@ -316,4 +316,69 @@ defmodule Fog.IntegrationTest do
              String.contains?(text, "log from middle")
            end)
   end
+
+  test "cli query with grep parameter", %{
+    client: client,
+    token: token,
+    key0: key0,
+    key1: key1,
+    conn: conn
+  } do
+    # Send logs with different patterns
+    test_logs = [
+      "ERROR: database connection failed",
+      "INFO: normal operation proceeding",
+      "ERROR: authentication failed",
+      "DEBUG: cache miss",
+      "ERROR: disk space low"
+    ]
+
+    Enum.each(test_logs, fn log ->
+      TestAgent.send_log(client, key0, key1, log)
+    end)
+
+    # Allow logs to be processed
+    Process.sleep(100)
+
+    # Query with grep for ERROR logs
+    conn =
+      conn
+      |> auth_header(token)
+      |> get(~p"/api/v1/cli/query", %{
+        selectors: "#{key0}.#{key1}",
+        grep: "ERROR"
+      })
+
+    rjson = json_response(conn, 200)
+    logs = rjson["logs"]
+
+    # Should only see ERROR logs
+    assert length(logs) == 3
+
+    # Verify each log contains ERROR
+    Enum.each(logs, fn %{"text" => text} ->
+      assert String.contains?(text, "ERROR")
+    end)
+
+    # Verify we don't see INFO or DEBUG logs
+    refute Enum.any?(logs, fn %{"text" => text} ->
+             String.contains?(text, "INFO") or String.contains?(text, "DEBUG")
+           end)
+
+    # Test case-sensitive grep
+    conn =
+      build_conn()
+      |> auth_header(token)
+      |> get(~p"/api/v1/cli/query", %{
+        selectors: "#{key0}.#{key1}",
+        # lowercase
+        grep: "error"
+      })
+
+    rjson = json_response(conn, 200)
+    logs = rjson["logs"]
+
+    # Should see no logs since grep is case-sensitive
+    assert length(logs) == 0
+  end
 end
