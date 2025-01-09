@@ -25,35 +25,51 @@ defmodule Fog.LogStore do
     ])
   end
 
-  defp file_for(:reading, key0, key1, timestamp) do
+  defp file_for(:reading, key0, key1, {initial_timestamp, final_timestamp}) do
     possible_path =
-      file_for(:writing, key0, key1, timestamp)
+      file_for(:writing, key0, key1, initial_timestamp)
 
     if File.exists?(possible_path) do
-      possible_path
+      {initial_timestamp, possible_path}
     else
-      # move forward by a day, unless we hit the future
-      now = DateTime.utc_now()
-      next_timestamp = timestamp |> DateTime.add(1, :day)
+      # move forward by a day, unless we hit final_timestamp
+      next_timestamp = initial_timestamp |> DateTime.add(1, :day)
 
-      Logger.warning("#{key0}/#{key1} has no file for given timestamp #{timestamp}")
+      Logger.warning("#{key0}/#{key1} has no file for given timestamp #{initial_timestamp}")
 
-      if DateTime.compare(next_timestamp, now) == :gt do
-        nil
-      else
-        file_for(:reading, key0, key1, next_timestamp)
+      cond do
+        # blew past final timestamp
+        # next_timestamp may be on the same day as final_timestamp, but at a different hour that is :gt.
+        # to prevent this, compared with +1d of final_timestamp, should do the trick
+        DateTime.compare(next_timestamp, final_timestamp |> DateTime.add(1, :day)) == :gt ->
+          Logger.debug(
+            "next_timestamp (#{inspect(next_timestamp)}) is after #{inspect(final_timestamp)}, stopping"
+          )
+
+          nil
+
+        true ->
+          Logger.debug("NEXT")
+          file_for(:reading, key0, key1, {next_timestamp, final_timestamp})
       end
     end
   end
 
-  def store(key0, key1, line) do
-    now = DateTime.utc_now()
+  def store(key0, key1, line, timestamp \\ nil) do
+    now =
+      if timestamp == nil do
+        DateTime.utc_now()
+      else
+        DateTime.from_unix!(timestamp, :millisecond)
+      end
+
     log_path = file_for(:writing, key0, key1, now)
     {:ok, file} = File.open(log_path, [:append])
     timestamp = now |> DateTime.to_unix(:millisecond)
     # <version>\t<timestamp>\t<log itself>
     IO.write(file, "1\t#{timestamp}\t#{line}\n")
     File.close(file)
+    Logger.debug("Logged line #{line} at timestamp #{inspect(now)} to file @ #{log_path}.")
 
     Fog.LogStore.Realtime.process_log(%LogLine{
       key0: key0,
@@ -174,24 +190,39 @@ defmodule Fog.LogStore do
     {limit, ""} = Integer.parse(limit)
 
     # for each key, find the initial file based on the since parameter
-    now = DateTime.utc_now() |> DateTime.add(-30, :second)
-    {:ok, since} = (params["since"] || DateTime.to_iso8601(now)) |> parse_datetime
+    since_default = DateTime.utc_now() |> DateTime.add(-30, :second)
+    {:ok, since} = (params["since"] || DateTime.to_iso8601(since_default)) |> parse_datetime
 
-    # TODO support until
+    # for each key, find the last file based on until
+    until_default = DateTime.utc_now() |> DateTime.add(1, :second)
+    {:ok, until} = (params["until"] || DateTime.to_iso8601(until_default)) |> parse_datetime
+
     initial_files =
       wanted_keys
       |> Enum.map(fn {key0, key1} = d ->
-        {since, d, file_for(:reading, key0, key1, since)}
+        maybe_path = file_for(:reading, key0, key1, {since, until})
+        {since, until, d, maybe_path}
       end)
-      |> Enum.filter(fn {_, _, maybe_path} -> maybe_path != nil end)
-      |> Enum.sort_by(fn {dt, _, _} -> dt end, :asc)
+      |> Enum.filter(fn {_, _, _, maybe_path} -> maybe_path != nil end)
+      |> Enum.sort_by(fn {_, _, _, {%DateTime{} = dt, _}} -> dt end, :asc)
 
     # convert to unix ts for fast lookup in the file
     since = since |> DateTime.to_unix(:millisecond)
+    until = until |> DateTime.to_unix(:millisecond)
+
+    Logger.debug("querying #{inspect(params)}, got #{length(initial_files)} files to read")
+    Logger.debug("since: #{since}, until: #{until}")
+    now = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+    Logger.debug("since is #{now - since}msec ago")
+    Logger.debug("until is #{now - until}msec ago")
+
+    if since > until do
+      raise "since must be before until. this is a bug. since: #{since}, until: #{until}"
+    end
 
     initial_files
-    |> Enum.flat_map(fn {_, descriptor, file_path} ->
-      {:ok, lines} = read_log_lines(descriptor, file_path, since)
+    |> Enum.flat_map(fn {_, _, descriptor, file_path} ->
+      {:ok, lines} = read_log_lines(descriptor, file_path, since, until)
       lines
     end)
     |> Enum.sort_by(fn line -> line.timestamp end, :asc)
@@ -208,21 +239,27 @@ defmodule Fog.LogStore do
     |> then(fn v -> {:ok, v} end)
   end
 
-  defp read_log_lines({key0, key1}, file_path, since) do
+  defp read_log_lines({key0, key1}, {_, file_path}, since, until) do
+    Logger.debug("querying file #{file_path}")
+
     with {:ok, data} <- File.read(file_path) do
       data
       |> String.split("\n")
       # TODO grep support
       |> then(fn
         [] ->
-          Logger.warning("no logs found, since=#{since}")
+          Logger.warning("no logs found, since=#{since} until=#{inspect(until)}")
 
         v ->
-          Logger.debug("got #{length(v)} lines, since=#{inspect(since)}")
+          Logger.debug("got #{length(v)} lines, since=#{inspect(since)} until=#{inspect(until)}")
           v
       end)
       |> Enum.map(fn line ->
         cond do
+          line == "" ->
+            Logger.warning("empty line in #{inspect(file_path)}")
+            nil
+
           # storage format v1
           String.starts_with?(line, "1") ->
             parsed = String.split(line, "\t")
@@ -245,6 +282,7 @@ defmodule Fog.LogStore do
             }
 
           true ->
+            Logger.warning("invalid log line: '#{line}'")
             nil
         end
       end)
@@ -253,7 +291,15 @@ defmodule Fog.LogStore do
           false
 
         %LogLine{} = l ->
-          l.timestamp > since
+          Logger.debug(
+            "line since #{l.timestamp} >= #{inspect(since)} = #{inspect(l.timestamp >= since)}"
+          )
+
+          Logger.debug(
+            "line until #{l.timestamp} <= #{inspect(until)} = #{inspect(l.timestamp <= until)}"
+          )
+
+          l.timestamp >= since and l.timestamp <= until
       end)
     end
     |> then(fn

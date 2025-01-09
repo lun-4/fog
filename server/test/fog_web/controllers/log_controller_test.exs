@@ -10,14 +10,19 @@ defmodule Fog.IntegrationTest do
       WebSockex.start_link(url, __MODULE__, state)
     end
 
-    def send_log(client, key0, key1, data) do
+    def send_log(client, key0, key1, data, timestamp \\ nil) do
+      if timestamp != nil do
+        Logger.debug("test agent, sending #{timestamp} => #{data}")
+      end
+
       message =
         Jason.encode!(%{
           "op" => "send",
           "data" => %{
             "key0" => key0,
             "key1" => key1,
-            "data" => data
+            "data" => data,
+            "timestamp" => timestamp
           }
         })
 
@@ -247,5 +252,68 @@ defmodule Fog.IntegrationTest do
         HTTPoison.stream_next(conn)
         collect_sse_events(parent, conn, acc)
     end
+  end
+
+  test "cli query with until parameter", %{
+    client: client,
+    token: token,
+    key0: key0,
+    key1: key1,
+    conn: conn
+  } do
+    # Send logs with timestamps spread across time
+    current_time = System.system_time(:second)
+
+    # Send 3 logs with different timestamps
+    test_logs = [
+      # 2 hours ago
+      {"log from past", current_time - 2 * 60 * 60},
+      # 1 hour ago
+      {"log from middle", current_time - 1 * 60 * 60},
+      # now
+      {"log from recent", current_time}
+    ]
+
+    Enum.each(test_logs, fn {message, timestamp} ->
+      TestAgent.send_log(client, key0, key1, "#{timestamp}: #{message}", timestamp * 1000)
+    end)
+
+    # Allow logs to be processed
+    Process.sleep(100)
+
+    # Query with until set to 20 minutes ago
+    twenty_mins_ago =
+      DateTime.utc_now()
+      |> DateTime.add(-(20 * 60), :second)
+      |> DateTime.to_iso8601()
+
+    conn =
+      conn
+      |> auth_header(token)
+      |> get(~p"/api/v1/cli/query", %{
+        selectors: "#{key0}.#{key1}",
+        since: "18h",
+        until: twenty_mins_ago
+      })
+
+    rjson = json_response(conn, 200)
+    logs = rjson["logs"]
+
+    # Should only see logs from 2 hours ago and 1 hour ago
+    assert length(logs) == 2
+
+    # Verify we don't see the most recent log
+    refute Enum.any?(logs, fn %{"text" => text} ->
+             String.contains?(text, "log from recent")
+           end)
+
+    # Verify we do see the older logs
+    assert Enum.any?(logs, fn %{"text" => text} ->
+             String.contains?(text, "log from past")
+           end)
+
+    assert Enum.any?(logs, fn %{"text" => text} ->
+             String.contains?(text, "log from middle")
+           end)
   end
 end

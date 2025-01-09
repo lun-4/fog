@@ -79,12 +79,12 @@ defmodule FogWeb.AgentSocket do
   end
 
   defp handle_message(
-         %{"op" => "send", "data" => %{"data" => log_line, "key0" => key0, "key1" => key1}} =
+         %{"op" => "send", "data" => %{"data" => log_line, "key0" => key0, "key1" => key1} = data} =
            _message,
          _opts,
          state
        ) do
-    :ok = Fog.LogStore.store(key0, key1, log_line)
+    :ok = Fog.LogStore.store(key0, key1, log_line, data |> Map.get("timestamp"))
     {:reply, :ok, json(%{op: "ack"}), state}
   end
 
