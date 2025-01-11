@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Fog.Token do
   use Mix.Task
 
-  @requirements ["app.start"]
+  @requirements ["app.config"]
 
   def start_repo do
     [:ecto, :ecto_sql, :exqlite, :db_connection]
