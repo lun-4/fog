@@ -270,8 +270,6 @@ defmodule Fog.LogStore do
               Logger.warning("invalid log line: #{line}")
             end
 
-            # TODO Support grep
-
             line_timestamp_unix_str = parsed |> Enum.at(1)
             {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
             logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
