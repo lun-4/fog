@@ -44,22 +44,22 @@ mix phx.server
 
 # --- agent
 export FOG_TOKEN=12384837597_tokenforagent
-./bin/fog-agent-file -token $FOG_TOKEN -server ws://server.com:4087 -file /mylog.txt -key0 server0 -key1 service1
+./bin/fog-agent-file -token $FOG_TOKEN -server ws://server.com:4000 -file /mylog.txt -key0 server0 -key1 service1
 
 # --- cli
 export FOG_TOKEN=81375982379_tokenforself
 
 # fetch logs now
-./bin/fog -server http://localhost:4087 -selector server0.service1 -since 2h
+./bin/fog -server http://localhost:4000 -selector server0.service1 -since 2h
 
 # fetch then follow logs live
-./bin/fog -server http://localhost:4087 -selector server0.service1 -follow
+./bin/fog -server http://localhost:4000 -selector server0.service1 -follow
 
 # all key1 from key0
-./bin/fog -server http://localhost:4087 -selector server0.\* -follow
+./bin/fog -server http://localhost:4000 -selector server0.\* -follow
 
 # all key0 with specified key1
-./bin/fog -server http://localhost:4087 -selector \*.service1 -follow
+./bin/fog -server http://localhost:4000 -selector \*.service1 -follow
 ```
 
 ## architecture
