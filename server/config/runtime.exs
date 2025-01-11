@@ -26,7 +26,7 @@ if config_env() in [:prod, :dev] do
       System.get_env("FOG_DATA_PATH") ||
         raise("""
         environment variable FOG_DATA_PATH is missing.
-        For example: /var/fog
+        For example: /var/fog/logs
         """)
 end
 
@@ -35,7 +35,7 @@ if config_env() == :prod do
     System.get_env("DATABASE_PATH") ||
       raise """
       environment variable DATABASE_PATH is missing.
-      For example: /etc/fog/fog.db
+      For example: /var/fog/fog.db
       """
 
   config :fog, Fog.Repo,

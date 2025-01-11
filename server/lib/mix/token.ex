@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Fog.Token do
   use Mix.Task
 
+  @requirements ["app.start"]
+
   def start_repo do
     [:ecto, :ecto_sql, :exqlite, :db_connection]
     |> Enum.each(fn app -> Application.ensure_all_started(app) end)
