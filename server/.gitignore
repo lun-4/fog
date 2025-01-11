@@ -30,3 +30,5 @@ fog-*.tar
 *.db-*
 
 ./dev-data
+.envrc
+dev-data
