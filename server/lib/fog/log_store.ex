@@ -90,14 +90,14 @@ defmodule Fog.LogStore do
           {:error, reason} -> {:error, reason}
         end
 
-      String.match?(input, ~r/^(\d+)(min|h|d|w)$/) ->
+      String.match?(input, ~r/^(\d+)(m|min|h|d|w)$/) ->
         # Relative time format
         [_, value, unit] = Regex.run(~r/^(\d+)(min|h|d|w)$/, input)
         value = String.to_integer(value)
 
         seconds =
           case unit do
-            "min" -> value * 60
+            v when v in ["m", "min"] -> value * 60
             "h" -> value * 60 * 60
             "d" -> value * 24 * 60 * 60
             "w" -> value * 7 * 24 * 60 * 60
