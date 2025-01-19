@@ -7,7 +7,7 @@ defmodule Fog.LogStore do
     defstruct [:key0, :key1, :timestamp, :text]
   end
 
-  defp data_path do
+  def data_path do
     cfg = Application.fetch_env!(:fog, Fog.LogStore)
     Path.expand(cfg[:data_path])
   end
