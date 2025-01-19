@@ -35,7 +35,7 @@ defmodule Fog.IndexStore do
   @spec serialize!(Data.t()) :: binary()
   defp serialize!(data) when is_map(data) do
     if length(data.seeks) != @seconds_per_day do
-      raise "ERROR: Invalid seek length, expected #{@seconds_per_day}, found #{length(data.seeks)}"
+      raise "ERROR: Invalid length of seek position, expected #{@seconds_per_day}, found #{length(data.seeks)}"
     end
 
     seeks_bin =

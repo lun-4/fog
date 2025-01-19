@@ -239,6 +239,25 @@ defmodule Fog.LogStore do
     |> then(fn v -> {:ok, v} end)
   end
 
+  defp parse_line_v1(key0, key1, line) do
+    parsed = String.split(line, "\t")
+
+    if length(parsed) < 3 do
+      Logger.warning("invalid log line: #{line}")
+    end
+
+    line_timestamp_unix_str = parsed |> Enum.at(1)
+    {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
+    logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
+
+    %LogLine{
+      key0: key0,
+      key1: key1,
+      timestamp: line_timestamp_unix,
+      text: logline
+    }
+  end
+
   defp read_log_lines({key0, key1}, {_, file_path}, since, until, grep) do
     Logger.debug("querying file #{file_path}")
 
@@ -264,22 +283,7 @@ defmodule Fog.LogStore do
 
           # storage format v1
           String.starts_with?(line, "1") ->
-            parsed = String.split(line, "\t")
-
-            if length(parsed) < 3 do
-              Logger.warning("invalid log line: #{line}")
-            end
-
-            line_timestamp_unix_str = parsed |> Enum.at(1)
-            {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
-            logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
-
-            %LogLine{
-              key0: key0,
-              key1: key1,
-              timestamp: line_timestamp_unix,
-              text: logline
-            }
+            parse_line_v1(key0, key1, line)
 
           true ->
             Logger.warning("invalid log line: '#{line}'")
@@ -312,6 +316,107 @@ defmodule Fog.LogStore do
         )
 
         {:ok, v}
+    end)
+  end
+
+  @spec build_index_ts_v1(any, any, DateTime.t()) :: :ok | {:error, term()}
+  def build_index_ts_v1(key0, key1, datetime) do
+    Logger.debug("building index #{key0}/#{key1} at #{inspect(datetime)}")
+    path = file_for(:writing, key0, key1, datetime)
+
+    initial_datetime =
+      path
+      |> Path.basename()
+      |> String.trim_trailing(".log")
+      |> String.split("-")
+      |> then(fn [year, month, day] ->
+        {year, _} = Integer.parse(year)
+        {month, _} = Integer.parse(month)
+        {day, _} = Integer.parse(day)
+        fake_dt = DateTime.new!(Date.new!(year, month, day), ~T[00:00:00], "Etc/UTC")
+        fake_dt
+      end)
+
+    # TODO (optimization): should close file lol
+    {:ok, file} = File.open(path, [:read])
+
+    # build index by going through every line
+
+    Stream.unfold({:file.position(file, :cur), file}, fn
+      {pos, file} ->
+        case IO.gets(file, "") do
+          :eof -> nil
+          line -> {{pos, line}, {:file.position(file, :cur), file}}
+        end
+    end)
+    |> Stream.map(fn {seek, line} ->
+      cond do
+        # storage format v1
+        String.starts_with?(line, "1") ->
+          {seek, parse_line_v1(key0, key1, line)}
+      end
+    end)
+    |> Enum.reduce(%{}, fn {{:ok, seek}, %LogLine{} = line}, acc ->
+      # TODO(optimization): dont need to parse all lines, can just get the first line
+      # and then compute offsets (a subtraction)
+
+      # index file works by batching log lines into per-second intervals
+      # that means a day contains 86400 index entries, always
+      line_dt = DateTime.from_unix!(line.timestamp, :millisecond)
+      seconds_after_midnight = Fog.IndexStore.second_of_day(line_dt)
+
+      if seconds_after_midnight > 86400 do
+        raise "Fog.IndexStore: line #{line.timestamp} is not in the right format (#{inspect(seconds_after_midnight)} is over 86400, shouldnt be)"
+      end
+
+      case acc |> Map.get(seconds_after_midnight) do
+        nil ->
+          # no entry, use this as entry
+          acc |> Map.put(seconds_after_midnight, {line_dt, seek})
+
+        _ ->
+          # has entry, dont use current log line as entry
+          acc
+      end
+    end)
+    |> Enum.map(fn {seconds_after_midnight, {line_dt, seek_position}} ->
+      # convert to DateTime so that IndexStore can validate we're giving good data
+      {line_dt
+       |> DateTime.to_date()
+       |> DateTime.new!(Time.from_seconds_after_midnight(seconds_after_midnight)), seek_position}
+    end)
+    |> Map.new()
+    # index_ts_v1 relies on 86400 entries, but log files may not have all the timestamps.
+    # hydrate to 86400
+    |> then(fn offset_map ->
+      Logger.debug(
+        "index_ts_v1: #{key0}/#{key1} has #{Enum.count(offset_map)} initial seek entries"
+      )
+
+      1..86400
+      |> Enum.map(fn seconds_from_midnight ->
+        wanted_dt =
+          initial_datetime
+          |> DateTime.add(seconds_from_midnight, :second)
+
+        stored_seek = offset_map |> Map.get(wanted_dt)
+        # TODO should probably use the last dt's index until non-zero.. maybe?
+        {wanted_dt, stored_seek || 0}
+      end)
+      |> Map.new()
+    end)
+    |> then(fn offset_map ->
+      Logger.debug(
+        "index_ts_v1: #{key0}/#{key1} normalized to #{Enum.count(offset_map)} seek entries"
+      )
+
+      # we can write all of this to the index file now!
+      Fog.IndexStore.write(
+        key0,
+        key1,
+        initial_datetime,
+        offset_map |> Fog.IndexStore.Data.from_offset_map!()
+      )
     end)
   end
 end

@@ -81,32 +81,107 @@ defmodule Fog.LogStoreBenchmarkTest do
     )
   end
 
+  test "index works", %{
+    key0_large: key0_large,
+    key1_large: key1_large
+  } do
+    {large_timestamps, large_timestamp_min, large_timestamp_max} =
+      [
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000)
+      ]
+      |> Enum.sort(:asc)
+      |> then(fn tstamps ->
+        IO.inspect(tstamps)
+
+        {
+          tstamps,
+          tstamps |> Enum.at(0),
+          tstamps |> Enum.at(-1)
+        }
+      end)
+
+    large_timestamps
+    |> Enum.each(fn timestamp ->
+      :ok = Fog.LogStore.build_index_ts_v1(key0_large, key1_large, timestamp)
+    end)
+
+    {:ok, _} =
+      Fog.LogStore.query(%{
+        "selectors" => ["#{key0_large}.#{key1_large}"],
+        "since" => large_timestamp_min |> DateTime.to_iso8601(),
+        "until" => large_timestamp_max |> DateTime.to_iso8601(),
+        "limit" => "100000"
+      })
+  end
+
   @tag :benchmark
   test "benchmark reads with log store", %{
-    key0_small: key0_small,
-    key1_small: key1_small
+    # key0_small: key0_small,
+    # key1_small: key1_small,
     # key0_medium: key0_medium,
     # key1_medium: key1_medium,
-    # key0_large: key0_large,
-    # key1_large: key1_large
+    key0_large: key0_large,
+    key1_large: key1_large
   } do
-    small_timestamp = write_test_data(key0_small, key1_small, 100)
+    # small_timestamp = write_test_data(key0_small, key1_small, 100)
     # medium_timestamp = write_test_data(key0_medium, key1_medium, 1000)
-    # large_timestamp = write_test_data(key0_large, key1_large, 10000)
+    {large_timestamps, large_timestamp_min, large_timestamp_max} =
+      [
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000),
+        write_test_data(key0_large, key1_large, 10000)
+      ]
+      |> Enum.sort(:asc)
+      |> then(fn tstamps ->
+        IO.inspect(tstamps)
+
+        {
+          tstamps,
+          tstamps |> Enum.at(0),
+          tstamps |> Enum.at(-1)
+        }
+      end)
+
     # Define the benchmarks
     Benchee.run(
       %{
-        "read_from_small" => fn ->
+        # "read_from_small" => fn ->
+        #  {:ok, _} =
+        #    Fog.LogStore.query(%{
+        #      "selectors" => ["#{key0_small}.#{key1_small}"],
+        #      "since" => small_timestamp |> DateTime.to_iso8601(),
+        #      "limit" => "100"
+        #    })
+        # end,
+        "read_from_large" => fn ->
           {:ok, _} =
             Fog.LogStore.query(%{
-              "selectors" => ["#{key0_small}.#{key1_small}"],
-              "since" => small_timestamp |> DateTime.to_iso8601(),
-              "limit" => "100"
+              "selectors" => ["#{key0_large}.#{key1_large}"],
+              "since" => large_timestamp_min |> DateTime.to_iso8601(),
+              "until" => large_timestamp_max |> DateTime.to_iso8601(),
+              "limit" => "100000"
+            })
+        end,
+        "read_from_large_with_index" => fn ->
+          large_timestamps
+          |> Enum.each(fn timestamp ->
+            :ok = Fog.LogStore.build_index_ts_v1(key0_large, key1_large, timestamp)
+          end)
+
+          {:ok, _} =
+            Fog.LogStore.query(%{
+              "selectors" => ["#{key0_large}.#{key1_large}"],
+              "since" => large_timestamp_min |> DateTime.to_iso8601(),
+              "until" => large_timestamp_max |> DateTime.to_iso8601(),
+              "limit" => "100000"
             })
         end
-        # "query_all_data" => fn ->
-        #  nil
-        # end
       },
       time: 10,
       memory_time: 2,
