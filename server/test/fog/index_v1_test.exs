@@ -29,7 +29,8 @@ defmodule Fog.IndexV1Test do
     seeks =
       1..86400
       |> Enum.map(fn seconds ->
-        {%{midnight | second: seconds}, 0}
+        rand_offset = :rand.uniform(10000)
+        {%{midnight | second: seconds}, rand_offset}
       end)
       |> Enum.into(%{})
 
@@ -40,5 +41,22 @@ defmodule Fog.IndexV1Test do
 
     {:ok, data} = Fog.IndexStore.read(key0, key1, datetime)
     assert data != nil
+
+    {wanted_key, query} =
+      seeks
+      |> Map.keys()
+      |> Enum.random()
+      |> then(fn dt ->
+        {dt, %{dt | microsecond: {356, 0}}}
+      end)
+
+    wanted_seek = seeks |> Map.get(wanted_key)
+    wanted_second = Fog.IndexStore.second_of_day(wanted_key)
+
+    seek_from_list = data.seeks |> Enum.at(wanted_second)
+    assert seek_from_list != wanted_seek
+
+    {:ok, seek_from_constant} = Fog.IndexStore.read_at(key0, key1, query)
+    assert seek_from_constant == wanted_seek
   end
 end

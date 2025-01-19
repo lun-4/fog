@@ -129,7 +129,26 @@ defmodule Fog.IndexStore do
   end
 
   @spec second_of_day(DateTime.t()) :: integer()
-  defp second_of_day(datetime) do
+  def second_of_day(datetime) do
     datetime.hour * 3600 + datetime.minute * 60 + datetime.second
+  end
+
+  @spec read_at(String.t(), String.t(), DateTime.t()) :: {:ok, integer()} | {:error, term()}
+  def read_at(key0, key1, timestamp) do
+    path = path_for(key0, key1, timestamp)
+    second = second_of_day(timestamp)
+
+    # Calculate the exact position to read from:
+    # Skip checksum (8 bytes) + (second * 8 bytes per seek)
+    seek_position = @checksum_size + (second - 1) * @seek_size
+
+    with {:ok, file} <- File.open(path, [:read, :raw, :binary]),
+         {:ok, <<seek_value::unsigned-big-64>>} <- :file.pread(file, seek_position, @seek_size),
+         :ok <- File.close(file) do
+      {:ok, seek_value}
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end
