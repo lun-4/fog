@@ -47,7 +47,9 @@ defmodule Fog.MixProject do
       {:dns_cluster, "~> 0.1.1"},
       {:bandit, "~> 1.5"},
       {:websockex, "~> 0.4.3"},
-      {:httpoison, "~> 2.2.1"}
+      {:httpoison, "~> 2.2.1"},
+      {:benchee, "~> 1.0", only: [:test, :dev]},
+      {:benchee_html, "~> 1.0", only: [:test, :dev]}
     ]
   end
 

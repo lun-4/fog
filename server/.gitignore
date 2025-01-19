@@ -32,3 +32,4 @@ fog-*.tar
 ./dev-data
 .envrc
 dev-data
+benchmark*html
