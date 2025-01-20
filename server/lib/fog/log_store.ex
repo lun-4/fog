@@ -12,7 +12,7 @@ defmodule Fog.LogStore do
     Path.expand(cfg[:data_path])
   end
 
-  defp folder_for(key0, key1) do
+  def folder_for(key0, key1) do
     path = Path.join([data_path(), key0, key1])
     File.mkdir_p!(path)
     path
@@ -388,25 +388,24 @@ defmodule Fog.LogStore do
     end)
   end
 
-  defp datetime_from_path(path) do
-    initial_datetime =
-      path
-      |> Path.basename()
-      |> String.split(".")
-      |> Enum.at(0)
-      |> String.split("-")
-      |> then(fn [year, month, day] ->
-        {year, _} = Integer.parse(year)
-        {month, _} = Integer.parse(month)
-        {day, _} = Integer.parse(day)
-        fake_dt = DateTime.new!(Date.new!(year, month, day), ~T[00:00:00], "Etc/UTC")
-        fake_dt
-      end)
+  def datetime_from_path(path) do
+    path
+    |> Path.basename()
+    |> String.split(".")
+    |> Enum.at(0)
+    |> String.split("-")
+    |> then(fn [year, month, day] ->
+      {year, _} = Integer.parse(year)
+      {month, _} = Integer.parse(month)
+      {day, _} = Integer.parse(day)
+      fake_dt = DateTime.new!(Date.new!(year, month, day), ~T[00:00:00], "Etc/UTC")
+      fake_dt
+    end)
   end
 
   @spec build_index_ts_v1(any, any, DateTime.t()) :: :ok | {:error, term()}
   def build_index_ts_v1(key0, key1, datetime) do
-    Logger.debug("building index #{key0}/#{key1} at #{inspect(datetime)}")
+    Logger.debug("building index_ts_v1 for #{key0}/#{key1} at #{inspect(datetime)}")
     path = file_for(:writing, key0, key1, datetime)
 
     initial_datetime =
