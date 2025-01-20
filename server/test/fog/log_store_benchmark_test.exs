@@ -144,7 +144,7 @@ defmodule Fog.LogStoreBenchmarkTest do
         write_test_data(key0_large, key1_large, 10000),
         write_test_data(key0_large, key1_large, 10000)
       ]
-      |> Enum.sort(:asc)
+      |> Enum.sort(DateTime)
       |> then(fn tstamps ->
         IO.inspect(tstamps)
 
@@ -154,6 +154,11 @@ defmodule Fog.LogStoreBenchmarkTest do
           tstamps |> Enum.at(-1)
         }
       end)
+
+    large_timestamps
+    |> Enum.each(fn timestamp ->
+      :ok = Fog.LogStore.build_index_ts_v1(key0_large, key1_large, timestamp)
+    end)
 
     # Define the benchmarks
     Benchee.run(
@@ -168,26 +173,31 @@ defmodule Fog.LogStoreBenchmarkTest do
         # end,
         "read_from_large" => fn ->
           {:ok, _} =
-            Fog.LogStore.query(%{
-              "selectors" => ["#{key0_large}.#{key1_large}"],
-              "since" => large_timestamp_min |> DateTime.to_iso8601(),
-              "until" => large_timestamp_max |> DateTime.to_iso8601(),
-              "limit" => "100000"
-            })
+            Fog.LogStore.query(
+              %{
+                "selectors" => ["#{key0_large}.#{key1_large}"],
+                "since" => large_timestamp_min |> DateTime.to_iso8601(),
+                "until" => large_timestamp_max |> DateTime.to_iso8601(),
+                "limit" => "100000"
+              },
+              disable_features: [
+                :index_ts_v1
+              ]
+            )
         end,
         "read_from_large_with_index" => fn ->
-          large_timestamps
-          |> Enum.each(fn timestamp ->
-            :ok = Fog.LogStore.build_index_ts_v1(key0_large, key1_large, timestamp)
-          end)
-
           {:ok, _} =
-            Fog.LogStore.query(%{
-              "selectors" => ["#{key0_large}.#{key1_large}"],
-              "since" => large_timestamp_min |> DateTime.to_iso8601(),
-              "until" => large_timestamp_max |> DateTime.to_iso8601(),
-              "limit" => "100000"
-            })
+            Fog.LogStore.query(
+              %{
+                "selectors" => ["#{key0_large}.#{key1_large}"],
+                "since" => large_timestamp_min |> DateTime.to_iso8601(),
+                "until" => large_timestamp_max |> DateTime.to_iso8601(),
+                "limit" => "100000"
+              },
+              forced_features: [
+                :index_ts_v1
+              ]
+            )
         end
       },
       time: 10,

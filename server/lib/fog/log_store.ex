@@ -273,6 +273,9 @@ defmodule Fog.LogStore do
     forced_features = opts |> Keyword.get(:forced_features, [])
     forced_index_ts_v1? = Enum.any?(forced_features, fn f -> f == :index_ts_v1 end)
 
+    unwanted_features = opts |> Keyword.get(:unwanted_features, [])
+    unwanted_index_ts_v1? = Enum.any?(unwanted_features, fn f -> f == :index_ts_v1 end)
+
     path_datetime = datetime_from_path(file_path)
     index_path = Fog.IndexStore.path_for(key0, key1, path_datetime)
     has_index_ts_v1? = File.exists?(index_path)
@@ -289,7 +292,7 @@ defmodule Fog.LogStore do
     end
 
     {start_offset, end_offset} =
-      if could_use_index_ts_v1? and has_index_ts_v1? do
+      if could_use_index_ts_v1? and has_index_ts_v1? and not unwanted_index_ts_v1? do
         start_offset =
           if contains_since? do
             Logger.debug("using index_ts_v1 index for since")
