@@ -38,4 +38,26 @@ defmodule Mix.Tasks.Fog.Index do
       end
     end)
   end
+
+  def run(["check_ts_v1", key0, key1]) do
+    Logger.info("Validating checksums for #{key0} #{key1} (assumes all indices exist)")
+
+    folder = Fog.LogStore.folder_for(key0, key1)
+
+    File.ls!(folder)
+    |> Enum.map(fn child_path ->
+      path = Path.join([folder, child_path])
+
+      cond do
+        File.regular?(path) ->
+          timestamp = Fog.LogStore.datetime_from_path(path)
+          Logger.info("checking #{path}...")
+          {:ok, _} = Fog.IndexStore.read(key0, key1, timestamp)
+          Logger.info("ok!")
+
+        true ->
+          Logger.info("ignoring #{inspect(path)}")
+      end
+    end)
+  end
 end
