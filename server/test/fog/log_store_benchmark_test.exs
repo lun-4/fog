@@ -93,7 +93,7 @@ defmodule Fog.LogStoreBenchmarkTest do
         write_test_data(key0_large, key1_large, 10000),
         write_test_data(key0_large, key1_large, 10000)
       ]
-      |> Enum.sort(:asc)
+      |> Enum.sort(:desc)
       |> then(fn tstamps ->
         IO.inspect(tstamps)
 
