@@ -24,7 +24,7 @@ defmodule Fog.IndexStore do
     path
   end
 
-  defp path_for(key0, key1, timestamp) do
+  def path_for(key0, key1, timestamp) do
     Path.join([
       folder_for(key0, key1),
       "#{timestamp.year}-#{timestamp.month}-#{timestamp.day}.bin"
@@ -138,17 +138,23 @@ defmodule Fog.IndexStore do
     path = path_for(key0, key1, timestamp)
     second = second_of_day(timestamp)
 
-    # Calculate the exact position to read from:
-    # Skip checksum (8 bytes) + (second * 8 bytes per seek)
-    seek_position = @checksum_size + (second - 1) * @seek_size
-
-    with {:ok, file} <- File.open(path, [:read, :raw, :binary]),
-         {:ok, <<seek_value::unsigned-big-64>>} <- :file.pread(file, seek_position, @seek_size),
-         :ok <- File.close(file) do
-      {:ok, seek_value}
+    if second == 0 do
+      # the index file (and log file in general) already start from 00:00,
+      # the first entry in the index is the first second, so we must not read it at all
+      {:ok, 0}
     else
-      {:error, reason} ->
-        {:error, reason}
+      # Calculate the exact position to read from:
+      # Skip checksum (8 bytes) + (second * 8 bytes per seek)
+      seek_position = @checksum_size + (second - 1) * @seek_size
+
+      with {:ok, file} <- File.open(path, [:read, :raw, :binary]),
+           {:ok, <<seek_value::unsigned-big-64>>} <- :file.pread(file, seek_position, @seek_size),
+           :ok <- File.close(file) do
+        {:ok, seek_value}
+      else
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 end

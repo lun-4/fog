@@ -64,6 +64,8 @@ defmodule Fog.LogStore do
       end
 
     log_path = file_for(:writing, key0, key1, now)
+
+    # TODO (optimization): we can hold file descriptors at runtime instead of open/close all the time
     {:ok, file} = File.open(log_path, [:append])
     timestamp = now |> DateTime.to_unix(:millisecond)
     # <version>\t<timestamp>\t<log itself>
@@ -175,7 +177,7 @@ defmodule Fog.LogStore do
     |> Enum.any?()
   end
 
-  def query(params) do
+  defp get_files_for(params) do
     all = all_keys()
 
     wanted_keys =
@@ -183,11 +185,6 @@ defmodule Fog.LogStore do
       |> Enum.filter(fn k0k1 ->
         matches_selectors?(k0k1, params["selectors"])
       end)
-
-    Logger.info("query: #{inspect(wanted_keys)}")
-
-    limit = params["limit"] || raise "missing limit. this is a bug"
-    {limit, ""} = Integer.parse(limit)
 
     # for each key, find the initial file based on the since parameter
     since_default = DateTime.utc_now() |> DateTime.add(-30, :second)
@@ -197,7 +194,7 @@ defmodule Fog.LogStore do
     until_default = DateTime.utc_now() |> DateTime.add(1, :second)
     {:ok, until} = (params["until"] || DateTime.to_iso8601(until_default)) |> parse_datetime
 
-    initial_files =
+    files =
       wanted_keys
       |> Enum.map(fn {key0, key1} = d ->
         maybe_path = file_for(:reading, key0, key1, {since, until})
@@ -206,26 +203,37 @@ defmodule Fog.LogStore do
       |> Enum.filter(fn {_, _, _, maybe_path} -> maybe_path != nil end)
       |> Enum.sort_by(fn {_, _, _, {%DateTime{} = dt, _}} -> dt end, :asc)
 
-    # convert to unix ts for fast lookup in the file
-    since = since |> DateTime.to_unix(:millisecond)
-    until = until |> DateTime.to_unix(:millisecond)
+    {files, since, until}
+  end
+
+  def query(params, opts \\ []) do
+    Logger.info("query: #{inspect(params)}")
+
+    limit = params["limit"] || raise "missing limit. this is a bug"
+    {limit, ""} = Integer.parse(limit)
+
+    {initial_files, since, until} = get_files_for(params)
 
     Logger.debug("querying #{inspect(params)}, got #{length(initial_files)} files to read")
     Logger.debug("since: #{since}, until: #{until}")
-    now = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
-    Logger.debug("since is #{now - since}msec ago")
-    Logger.debug("until is #{now - until}msec ago")
+    now = DateTime.utc_now()
 
-    if since > until do
-      raise "since must be before until. this is a bug. since: #{since}, until: #{until}"
+    Logger.debug("since is #{DateTime.diff(now, since, :millisecond)}msec ago")
+    Logger.debug("until is #{DateTime.diff(now, until, :millisecond)}msec ago")
+
+    if DateTime.compare(since, until) == :gt do
+      raise "since must be before until. this is a bug. since: #{inspect(since)}, until: #{inspect(until)}. #{inspect(DateTime.compare(since, until))}"
     end
 
     initial_files
-    |> Enum.flat_map(fn {_, _, descriptor, file_path} ->
-      {:ok, lines} = read_log_lines(descriptor, file_path, since, until, params["grep"])
+    |> Enum.flat_map(fn {_, _, k0k1, file_path} ->
+      {:ok, lines} = read_log_lines(k0k1, file_path, since, until, params["grep"], opts)
       lines
     end)
+    # TODO (optimization): we do not need to sort if there's only one full selector (k0.k1, rather than k0.* or *.k1)
+    # TODO (optimization): on the full selector case, sort filepaths by date rather than by k0k1 (then quit this second sort lol)
     |> Enum.sort_by(fn line -> line.timestamp end, :asc)
+    # TODO (optimization): once amount of lines hits limit, we can stop reading
     |> Enum.slice(0..(limit - 1))
     # reprocess the lines so their timestamps are DateTime instead of ints
     |> Enum.map(fn line ->
@@ -258,10 +266,69 @@ defmodule Fog.LogStore do
     }
   end
 
-  defp read_log_lines({key0, key1}, {_, file_path}, since, until, grep) do
-    Logger.debug("querying file #{file_path}")
+  defp read_log_lines({key0, key1}, {_, file_path}, since, until, grep, opts) do
+    Logger.debug("querying file #{file_path} with opts #{inspect(opts)}")
 
-    with {:ok, data} <- File.read(file_path) do
+    verbose_debug? = opts |> Keyword.get(:verbose_debug, false)
+    forced_features = opts |> Keyword.get(:forced_features, [])
+    forced_index_ts_v1? = Enum.any?(forced_features, fn f -> f == :index_ts_v1 end)
+
+    path_datetime = datetime_from_path(file_path)
+    index_path = Fog.IndexStore.path_for(key0, key1, path_datetime)
+    has_index_ts_v1? = File.exists?(index_path)
+
+    contains_since? = path_datetime |> DateTime.to_date() == since |> DateTime.to_date()
+    contains_until? = path_datetime |> DateTime.to_date() == until |> DateTime.to_date()
+    # index_ts_v1 works by letting us map a timestamp to a seek offset
+    # this works on singular file speedups, but won't really work if you want us to process 3GB of data
+    # other optimizations (like line streaming) may work out best for us here
+    could_use_index_ts_v1? = contains_since? || contains_until?
+
+    if could_use_index_ts_v1? and not has_index_ts_v1? and forced_index_ts_v1? do
+      raise "no index found for #{file_path} even though index_ts_v1 is a required query feature"
+    end
+
+    {start_offset, end_offset} =
+      if could_use_index_ts_v1? and has_index_ts_v1? do
+        start_offset =
+          if contains_since? do
+            Logger.debug("using index_ts_v1 index for since")
+            {:ok, start_offset} = Fog.IndexStore.read_at(key0, key1, since)
+            start_offset
+          else
+            0
+          end
+
+        end_offset =
+          if contains_until? do
+            Logger.debug("using index_ts_v1 index for until")
+            {:ok, end_offset} = Fog.IndexStore.read_at(key0, key1, until)
+            end_offset
+          else
+            File.stat!(file_path) |> Map.get(:size)
+          end
+
+        {start_offset, end_offset}
+      else
+        # by default, read everything from the file
+        Logger.debug("not using index_ts_v1 index for this path")
+        {0, File.stat!(file_path) |> Map.get(:size)}
+      end
+
+    # TODO (optimization): should close file lol
+    {:ok, file} = File.open(file_path, [:read])
+    {:ok, _} = :file.position(file, start_offset)
+    amount = end_offset - start_offset
+
+    # convert to unix ts for fast lookup in the file
+    since = since |> DateTime.to_unix(:millisecond)
+    until = until |> DateTime.to_unix(:millisecond)
+
+    Logger.debug("start offset #{start_offset}, end offset #{end_offset}")
+    Logger.debug("getting #{amount} lines from #{since} to #{until} on #{file_path}")
+
+    # TODO (optimization): use Stream instead of reading entire file into memory
+    with {:ok, data} <- :file.read(file, amount) do
       data
       |> String.split("\n")
       |> then(fn
@@ -295,13 +362,15 @@ defmodule Fog.LogStore do
           false
 
         %LogLine{} = l ->
-          Logger.debug(
-            "line since #{l.timestamp} >= #{inspect(since)} = #{inspect(l.timestamp >= since)}"
-          )
+          if verbose_debug? do
+            Logger.debug(
+              "line since #{l.timestamp} >= #{inspect(since)} = #{inspect(l.timestamp >= since)}"
+            )
 
-          Logger.debug(
-            "line until #{l.timestamp} <= #{inspect(until)} = #{inspect(l.timestamp <= until)}"
-          )
+            Logger.debug(
+              "line until #{l.timestamp} <= #{inspect(until)} = #{inspect(l.timestamp <= until)}"
+            )
+          end
 
           l.timestamp >= since and l.timestamp <= until
       end)
@@ -319,15 +388,12 @@ defmodule Fog.LogStore do
     end)
   end
 
-  @spec build_index_ts_v1(any, any, DateTime.t()) :: :ok | {:error, term()}
-  def build_index_ts_v1(key0, key1, datetime) do
-    Logger.debug("building index #{key0}/#{key1} at #{inspect(datetime)}")
-    path = file_for(:writing, key0, key1, datetime)
-
+  defp datetime_from_path(path) do
     initial_datetime =
       path
       |> Path.basename()
-      |> String.trim_trailing(".log")
+      |> String.split(".")
+      |> Enum.at(0)
       |> String.split("-")
       |> then(fn [year, month, day] ->
         {year, _} = Integer.parse(year)
@@ -336,6 +402,16 @@ defmodule Fog.LogStore do
         fake_dt = DateTime.new!(Date.new!(year, month, day), ~T[00:00:00], "Etc/UTC")
         fake_dt
       end)
+  end
+
+  @spec build_index_ts_v1(any, any, DateTime.t()) :: :ok | {:error, term()}
+  def build_index_ts_v1(key0, key1, datetime) do
+    Logger.debug("building index #{key0}/#{key1} at #{inspect(datetime)}")
+    path = file_for(:writing, key0, key1, datetime)
+
+    initial_datetime =
+      path
+      |> datetime_from_path
 
     # TODO (optimization): should close file lol
     {:ok, file} = File.open(path, [:read])

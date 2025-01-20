@@ -93,9 +93,9 @@ defmodule Fog.LogStoreBenchmarkTest do
         write_test_data(key0_large, key1_large, 10000),
         write_test_data(key0_large, key1_large, 10000)
       ]
-      |> Enum.sort(:desc)
+      |> Enum.sort(DateTime)
       |> then(fn tstamps ->
-        IO.inspect(tstamps)
+        IO.inspect(tstamps, label: "tstamps")
 
         {
           tstamps,
@@ -103,6 +103,8 @@ defmodule Fog.LogStoreBenchmarkTest do
           tstamps |> Enum.at(-1)
         }
       end)
+      |> IO.inspect(label: "large timestamps")
+      |> dbg
 
     large_timestamps
     |> Enum.each(fn timestamp ->
@@ -110,12 +112,17 @@ defmodule Fog.LogStoreBenchmarkTest do
     end)
 
     {:ok, _} =
-      Fog.LogStore.query(%{
-        "selectors" => ["#{key0_large}.#{key1_large}"],
-        "since" => large_timestamp_min |> DateTime.to_iso8601(),
-        "until" => large_timestamp_max |> DateTime.to_iso8601(),
-        "limit" => "100000"
-      })
+      Fog.LogStore.query(
+        %{
+          "selectors" => ["#{key0_large}.#{key1_large}"],
+          "since" => large_timestamp_min |> DateTime.to_iso8601(),
+          "until" => large_timestamp_max |> DateTime.to_iso8601(),
+          "limit" => "100000"
+        },
+        forced_features: [
+          :index_ts_v1
+        ]
+      )
   end
 
   @tag :benchmark
