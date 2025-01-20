@@ -40,7 +40,7 @@ defmodule Fog.IndexStore do
 
     seeks_bin =
       for seek <- data.seeks, into: <<>> do
-        <<seek::unsigned-big-64>>
+        <<seek::signed-big-64>>
       end
 
     checksum = :erlang.crc32(<<seeks_bin::binary>>)
@@ -102,7 +102,7 @@ defmodule Fog.IndexStore do
         {:error, :checksum_mismatch}
       else
         seeks =
-          for <<seek::unsigned-big-64 <- seeks_bin>> do
+          for <<seek::signed-big-64 <- seeks_bin>> do
             seek
           end
 
@@ -148,7 +148,7 @@ defmodule Fog.IndexStore do
       seek_position = @checksum_size + (second - 1) * @seek_size
 
       with {:ok, file} <- File.open(path, [:read, :raw, :binary]),
-           {:ok, <<seek_value::unsigned-big-64>>} <- :file.pread(file, seek_position, @seek_size),
+           {:ok, <<seek_value::signed-big-64>>} <- :file.pread(file, seek_position, @seek_size),
            :ok <- File.close(file) do
         {:ok, seek_value}
       else
