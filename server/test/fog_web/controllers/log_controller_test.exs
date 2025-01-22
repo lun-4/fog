@@ -324,6 +324,7 @@ defmodule Fog.IntegrationTest do
     key1: key1,
     conn: conn
   } do
+    assert_receive {:ws_message, %{"op" => "hello"}}, 1000
     # Send logs with different patterns
     test_logs = [
       "ERROR: database connection failed",
@@ -338,7 +339,12 @@ defmodule Fog.IntegrationTest do
     end)
 
     # Allow logs to be processed
-    Process.sleep(100)
+    1..length(test_logs)
+    |> Enum.each(fn _ ->
+      assert_receive {:ws_message,
+                      %{"op" => "send_ack", "data" => %{"key0" => ^key0, "key1" => ^key1}}},
+                     2000
+    end)
 
     # Query with grep for ERROR logs
     conn =

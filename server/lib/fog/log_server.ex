@@ -60,7 +60,8 @@ defmodule Fog.LogServer do
        opts: opts,
        k0k1: k0k1,
        fds: %{},
-       index_ts_v1: %{}
+       index_ts_v1: %{},
+       websocket_pids: %{}
      }}
   end
 
@@ -75,7 +76,7 @@ defmodule Fog.LogServer do
   end
 
   @impl true
-  def handle_call({:store, line, %DateTime{} = timestamp}, _from, state) do
+  def handle_call({:store, line, %DateTime{} = timestamp}, {agent_pid, _}, state) do
     {key0, key1} = state.k0k1
     log_path = Fog.LogStore.file_for(:writing, key0, key1, timestamp)
     index_path = Fog.IndexStore.path_for(key0, key1, timestamp)
@@ -139,6 +140,15 @@ defmodule Fog.LogServer do
         state.index_ts_v1,
         Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
       )
+
+    state =
+      put_in(
+        state.websocket_pids,
+        Map.put(state.websocket_pids, agent_pid, true)
+      )
+
+    # for now since we don't batch, ack always
+    send(agent_pid, {:log_server_ack, key0, key1})
 
     {:reply, :ok, state}
   end
