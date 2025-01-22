@@ -13,6 +13,8 @@ defmodule Fog.Application do
       {Ecto.Migrator, repos: Application.fetch_env!(:fog, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:fog, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Fog.PubSub},
+      {Registry, keys: :unique, name: Fog.LogServer.Registry},
+      {DynamicSupervisor, strategy: :one_for_one, name: Fog.LogServer.Supervisor},
       {Fog.LogStore.Realtime, name: Fog.LogStore.Realtime},
       # Start a worker by calling: Fog.Worker.start_link(arg)
       # {Fog.Worker, arg},

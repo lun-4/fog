@@ -18,14 +18,14 @@ defmodule Fog.LogStore do
     path
   end
 
-  defp file_for(:writing, key0, key1, timestamp) do
+  def file_for(:writing, key0, key1, timestamp) do
     Path.join([
       folder_for(key0, key1),
       "#{timestamp.year}-#{timestamp.month}-#{timestamp.day}.log"
     ])
   end
 
-  defp file_for(:reading, key0, key1, {initial_timestamp, final_timestamp}) do
+  def file_for(:reading, key0, key1, {initial_timestamp, final_timestamp}) do
     possible_path =
       file_for(:writing, key0, key1, initial_timestamp)
 
@@ -63,15 +63,8 @@ defmodule Fog.LogStore do
         DateTime.from_unix!(timestamp, :millisecond)
       end
 
-    log_path = file_for(:writing, key0, key1, now)
-
-    # TODO (optimization): we can hold file descriptors at runtime instead of open/close all the time
-    {:ok, file} = File.open(log_path, [:append])
-    timestamp = now |> DateTime.to_unix(:millisecond)
-    # <version>\t<timestamp>\t<log itself>
-    IO.write(file, "1\t#{timestamp}\t#{line}\n")
-    File.close(file)
-    Logger.debug("Logged line #{line} at timestamp #{inspect(now)} to file @ #{log_path}.")
+    {:ok, server} = Fog.LogServer.get_or_start_server(key0, key1)
+    :ok = Fog.LogServer.store(server, line, now)
 
     Fog.LogStore.Realtime.process_log(%LogLine{
       key0: key0,
