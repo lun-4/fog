@@ -88,7 +88,7 @@ defmodule Fog.LogServer do
           {:error, :enoent} ->
             # we need to build the index for this file right now as it's not available
 
-            # TODO (optimization): there should be an even higher level process that takes care of turning
+            # TODO (index): there should be an even higher level process that takes care of turning
             # off index_ts_v1 for log files that are below 1MB, turning it on when they are over 1MB
             # (and backfilling missing days)
             :ok = Fog.LogStore.build_index_ts_v1(key0, key1, timestamp)
@@ -98,7 +98,8 @@ defmodule Fog.LogServer do
             v
         end
       else
-        {:ok, maybe_index_data}
+        {_, _, _, real_index_data} = maybe_index_data
+        {:ok, real_index_data}
       end
 
     maybe_fd = state.fds |> Map.get(log_path)
@@ -111,6 +112,7 @@ defmodule Fog.LogServer do
 
     timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
     current_seek = :file.position(fd, :cur)
+    # TODO (optimization): batch to temporary file then fsync+rename
     # <version>\t<timestamp>\t<log itself>
     IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
     Logger.debug("Logged line #{line} at timestamp #{timestamp} to file @ #{log_path}.")

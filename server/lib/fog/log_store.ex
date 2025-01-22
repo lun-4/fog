@@ -416,30 +416,33 @@ defmodule Fog.LogStore do
     case File.open(path, [:read]) do
       {:error, :enoent} ->
         # TODO we need to generate a seek array that is [-1, -1, -1...] on this case
-        raise "TODO: what to do when the file is empty or doesnt exist"
+        really_build_index_ts_v1(key0, key1, initial_datetime, [])
 
-      {:ok, fd} ->
-        really_build_index_ts_v1(key0, key1, initial_datetime, fd)
+      {:ok, file} ->
+        stream =
+          Stream.unfold({:file.position(file, :cur), file}, fn
+            {pos, file} ->
+              case IO.gets(file, "") do
+                :eof -> nil
+                line -> {{pos, line}, {:file.position(file, :cur), file}}
+              end
+          end)
+          |> Stream.map(fn {seek, line} ->
+            cond do
+              # storage format v1
+              String.starts_with?(line, "1") ->
+                {seek, parse_line_v1(key0, key1, line)}
+            end
+          end)
+
+        really_build_index_ts_v1(key0, key1, initial_datetime, stream)
     end
   end
 
-  defp really_build_index_ts_v1(key0, key1, initial_timestamp, file) do
+  defp really_build_index_ts_v1(key0, key1, initial_datetime, stream) do
     # build index by going through every line
 
-    Stream.unfold({:file.position(file, :cur), file}, fn
-      {pos, file} ->
-        case IO.gets(file, "") do
-          :eof -> nil
-          line -> {{pos, line}, {:file.position(file, :cur), file}}
-        end
-    end)
-    |> Stream.map(fn {seek, line} ->
-      cond do
-        # storage format v1
-        String.starts_with?(line, "1") ->
-          {seek, parse_line_v1(key0, key1, line)}
-      end
-    end)
+    stream
     |> Enum.reduce(%{}, fn {{:ok, seek}, %LogLine{} = line}, acc ->
       # TODO(optimization): dont need to parse all lines, can just get the first line
       # and then compute offsets (a subtraction)
