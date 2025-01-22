@@ -95,7 +95,7 @@ defmodule Fog.IndexStore do
          :ok <- File.rename(temp_path, path) do
       :ok
     else
-      {:error, v} -> {:error, v}
+      v -> v
     end
   end
 

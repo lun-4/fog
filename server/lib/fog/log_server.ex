@@ -51,12 +51,20 @@ defmodule Fog.LogServer do
   def init(opts) do
     k0k1 = opts |> Keyword.fetch!(:k0k1)
     Logger.info("Starting #{__MODULE__} k0k1=#{inspect(k0k1)}")
-    {:ok, %{opts: opts, k0k1: k0k1, fds: %{}}}
+
+    schedule_unused_fds()
+
+    {:ok,
+     %{
+       opts: opts,
+       k0k1: k0k1,
+       fds: %{},
+       index_ts_v1: %{}
+     }}
   end
 
-  @impl true
-  def handle_call(:ping, _from, state) do
-    {:reply, :pong, state}
+  defp schedule_unused_fds() do
+    Process.send_after(self(), :check_unused_fds, 10 * 60 * 1000)
   end
 
   @impl true
@@ -81,7 +89,7 @@ defmodule Fog.LogServer do
   end
 
   @impl true
-  def handle_cast(:check_unused_fds, state) do
+  def handle_info(:check_unused_fds, state) do
     state.fds
     |> Enum.map(fn {path, {fd, fd_timestamp}} ->
       current_timestamp = System.monotonic_time()
@@ -97,6 +105,7 @@ defmodule Fog.LogServer do
     end)
     |> Enum.filter(fn v -> v != nil end)
     |> then(fn new_fds ->
+      schedule_unused_fds()
       {:noreply, put_in(state.fds, new_fds)}
     end)
   end
