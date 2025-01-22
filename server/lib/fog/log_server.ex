@@ -155,13 +155,16 @@ defmodule Fog.LogServer do
 
   @impl true
   def handle_info(:sync_index, state) do
+    # TODO (index): we need to check if the index wasn't changed by another process (shouldn't happen, but can happen in tests)
+    # do this by reading the index then comparing, if it's a different serialization then we must ignore our own data
+    # and then rebuild later on
     state.index_ts_v1
     |> Enum.map(fn {_, {key0, key1, timestamp, index_data}} ->
       Logger.debug("Syncing index for #{key0}, #{key1}, #{timestamp}...")
       Fog.IndexStore.write(key0, key1, timestamp, index_data)
     end)
     |> then(fn _ ->
-      # TODO when do we remove index_datas from memory???
+      # TODO (index): when do we remove index_datas from memory???
       # maybe after 3 days? so that server doesn't just leak memory every day and uptime can be high lol
       {:noreply, state}
     end)
