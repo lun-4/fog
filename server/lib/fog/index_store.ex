@@ -133,8 +133,9 @@ defmodule Fog.IndexStore do
     end
   end
 
+  @doc "Read entire deserialized index for the date of the given timestamp"
   @spec read(String.t(), String.t(), DateTime.t()) :: {:ok, Data.t()} | {:error, term()}
-  def read(key0, key1, timestamp) do
+  def read(key0, key1, %DateTime{} = timestamp) do
     path = path_for(key0, key1, timestamp)
 
     with {:ok, raw_data} <- File.read(path) do

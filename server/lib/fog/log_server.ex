@@ -53,6 +53,7 @@ defmodule Fog.LogServer do
     Logger.info("Starting #{__MODULE__} k0k1=#{inspect(k0k1)}")
 
     schedule_unused_fds()
+    schedule_index_syncing()
 
     {:ok,
      %{
@@ -67,10 +68,33 @@ defmodule Fog.LogServer do
     Process.send_after(self(), :check_unused_fds, 10 * 60 * 1000)
   end
 
+  defp schedule_index_syncing() do
+    # index_ts_v1 is per-second
+    # so checkpointing every minute sounds fine
+    Process.send_after(self(), :sync_index, 1 * 60 * 1000)
+  end
+
   @impl true
   def handle_call({:store, line, %DateTime{} = timestamp}, _from, state) do
     {key0, key1} = state.k0k1
     log_path = Fog.LogStore.file_for(:writing, key0, key1, timestamp)
+    index_path = Fog.IndexStore.path_for(key0, key1, timestamp)
+
+    maybe_index_data = state.index_ts_v1 |> Map.get(index_path)
+
+    {:ok, index_data} =
+      if maybe_index_data == nil do
+        case Fog.IndexStore.read(key0, key1, timestamp) do
+          {:error, :enoent} ->
+            # we need to build the index for this file
+            :todo
+
+          {:ok, _} = v ->
+            v
+        end
+      else
+        {:ok, maybe_index_data}
+      end
 
     maybe_fd = state.fds |> Map.get(log_path)
 
@@ -81,11 +105,49 @@ defmodule Fog.LogServer do
       end
 
     timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
+    current_seek = :file.position(fd, :cur)
     # <version>\t<timestamp>\t<log itself>
     IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
     Logger.debug("Logged line #{line} at timestamp #{timestamp} to file @ #{log_path}.")
     fd_timestamp = System.monotonic_time()
-    {:reply, :ok, put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))}
+
+    # if index_data didn't have this second of the day, set it
+    # (writing to the index file happens asynchronously)
+    second_of_day = Fog.IndexStore.second_of_day(timestamp)
+    maybe_seek = index_data.seeks |> Enum.at(second_of_day)
+
+    # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
+    # one entire minute with very useful data in-memory...
+    index_data =
+      if maybe_seek == nil do
+        put_in(index_data.seeks, index_data.seeks |> List.replace_at(second_of_day, current_seek))
+      else
+        index_data
+      end
+
+    state = put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))
+
+    state =
+      put_in(
+        state.index_ts_v1,
+        Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
+      )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info(:sync_index, state) do
+    state.index_ts_v1
+    |> Enum.map(fn {_, {key0, key1, timestamp, index_data}} ->
+      Logger.debug("Syncing index for #{key0}, #{key1}, #{timestamp}...")
+      Fog.IndexStore.write(key0, key1, timestamp, index_data)
+    end)
+    |> then(fn _ ->
+      # TODO when do we remove index_datas from memory???
+      # maybe after 3 days? so that server doesn't just leak memory every day and uptime can be high lol
+      {:noreply, state}
+    end)
   end
 
   @impl true
