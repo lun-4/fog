@@ -478,8 +478,10 @@ defmodule Fog.LogStore do
           |> DateTime.add(seconds_from_midnight, :second)
 
         stored_seek = offset_map |> Map.get(wanted_dt)
-        # TODO should probably use the last dt's index until non-zero.. maybe?
-        {wanted_dt, stored_seek || 0}
+        # we have to default to -1 and then let query execution decide how to deal with the file.
+        # we can't just use the last datetime because if, say, both `since` and `until` are unindexed,
+        # they'd go to the same seek and would provide an empty read
+        {wanted_dt, stored_seek || -1}
       end)
       |> Map.new()
     end)
