@@ -79,10 +79,24 @@ defmodule Fog.IndexStore do
     end
   end
 
+  def random_temp_filename(prefix) do
+    random_name = :crypto.strong_rand_bytes(8) |> Base.encode16()
+    Path.join(System.tmp_dir!(), prefix <> random_name)
+  end
+
   @spec write(String.t(), String.t(), DateTime.t(), Data.t()) :: :ok | {:error, term()}
   def write(key0, key1, timestamp, %Data{} = data) do
+    temp_path = random_temp_filename("fog_index")
     path = path_for(key0, key1, timestamp)
-    File.write(path, data |> serialize!)
+
+    Logger.debug("writing to #{temp_path}, renaming to #{path}")
+
+    with :ok <- File.write(temp_path, data |> serialize!),
+         :ok <- File.rename(temp_path, path) do
+      :ok
+    else
+      {:error, v} -> {:error, v}
+    end
   end
 
   @spec deserialize(binary()) :: {:ok, Data.t()} | {:error, term()}
