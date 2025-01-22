@@ -382,6 +382,11 @@ defmodule Fog.LogStore do
 
         {:ok, v}
     end)
+    |> then(fn
+      v ->
+        :ok = :file.close(file)
+        v
+    end)
   end
 
   def datetime_from_path(path) do
@@ -408,7 +413,6 @@ defmodule Fog.LogStore do
       path
       |> datetime_from_path
 
-    # TODO (optimization): should close file lol
     {:ok, file} = File.open(path, [:read])
 
     # build index by going through every line
