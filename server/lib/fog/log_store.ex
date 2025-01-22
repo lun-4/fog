@@ -212,7 +212,7 @@ defmodule Fog.LogStore do
     now = DateTime.utc_now()
 
     Logger.debug("since is #{DateTime.diff(now, since, :millisecond)}msec ago")
-    Logger.debug("until is #{DateTime.diff(now, until, :millisecond)}msec ago")
+    Logger.debug("until is #{DateTime.diff(until, now, :millisecond)}msec in the future")
 
     if DateTime.compare(since, until) == :gt do
       raise "since must be before until. this is a bug. since: #{inspect(since)}, until: #{inspect(until)}. #{inspect(DateTime.compare(since, until))}"
@@ -286,22 +286,37 @@ defmodule Fog.LogStore do
 
     {start_offset, end_offset} =
       if could_use_index_ts_v1? and has_index_ts_v1? and not unwanted_index_ts_v1? do
+        default_start_offset = 0
+
+        default_end_offset =
+          File.stat!(file_path) |> Map.get(:size)
+
         start_offset =
           if contains_since? do
             Logger.debug("using index_ts_v1 index for since")
             {:ok, start_offset} = Fog.IndexStore.read_at(key0, key1, since, accept_before?: true)
-            start_offset
+
+            if start_offset == -1 do
+              default_start_offset
+            else
+              start_offset
+            end
           else
-            0
+            default_start_offset
           end
 
         end_offset =
           if contains_until? do
             Logger.debug("using index_ts_v1 index for until")
             {:ok, end_offset} = Fog.IndexStore.read_at(key0, key1, until, accept_after?: true)
-            end_offset
+
+            if end_offset == -1 do
+              default_end_offset
+            else
+              end_offset
+            end
           else
-            File.stat!(file_path) |> Map.get(:size)
+            default_end_offset
           end
 
         {start_offset, end_offset}
@@ -313,6 +328,7 @@ defmodule Fog.LogStore do
 
     # TODO (optimization): should close file lol
     {:ok, file} = File.open(file_path, [:read])
+    Logger.debug("fseek on #{file_path} to #{start_offset}")
     {:ok, _} = :file.position(file, start_offset)
     amount = end_offset - start_offset
 
@@ -416,6 +432,7 @@ defmodule Fog.LogStore do
     case File.open(path, [:read]) do
       {:error, :enoent} ->
         # we need to generate a seek array that is [-1, -1, -1...] on this case
+        Logger.debug("building index out of empty log file")
         really_build_index_ts_v1(key0, key1, initial_datetime, [])
 
       {:ok, file} ->

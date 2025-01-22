@@ -220,7 +220,7 @@ defmodule Fog.IndexStore do
               )
               |> then(fn
                 %{index: nil} ->
-                  0
+                  {:ok, -1}
 
                 %{index: v} when not is_nil(v) ->
                   seeks
@@ -230,7 +230,7 @@ defmodule Fog.IndexStore do
                       raise "invalid logic conclusion. should have a seek value if index is not nil"
 
                     v ->
-                      v
+                      {:ok, v}
                   end)
               end)
 
