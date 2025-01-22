@@ -148,14 +148,23 @@ defmodule Fog.IndexStore do
     datetime.hour * 3600 + datetime.minute * 60 + datetime.second
   end
 
-  @spec read_at(String.t(), String.t(), DateTime.t()) :: {:ok, integer()} | {:error, term()}
-  def read_at(key0, key1, timestamp) do
+  @spec read_at(String.t(), String.t(), DateTime.t(), Keyword.t()) ::
+          {:ok, integer()} | {:error, term()}
+  def read_at(key0, key1, timestamp, opts \\ []) do
     path = path_for(key0, key1, timestamp)
     second = second_of_day(timestamp)
 
+    accept_before? = Keyword.get(opts, :accept_before?, false)
+    accept_after? = Keyword.get(opts, :accept_after?, false)
+
+    if accept_before? and accept_after? do
+      raise "invalid arguments: accept_before? and accept_after? are mutually exclusive"
+    end
+
     if second == 0 do
       # the index file (and log file in general) already start from 00:00,
-      # the first entry in the index is the first second, so we must not read it at all
+      # the first entry in the index is the first second, so we must not read the index entry at all
+      # just assume 0 is 0
       {:ok, 0}
     else
       # Calculate the exact position to read from:
@@ -165,7 +174,72 @@ defmodule Fog.IndexStore do
       with {:ok, file} <- File.open(path, [:read, :raw, :binary]),
            {:ok, <<seek_value::signed-big-64>>} <- :file.pread(file, seek_position, @seek_size),
            :ok <- File.close(file) do
-        {:ok, seek_value}
+        if seek_value == -1 and (accept_before? or accept_after?) do
+          # this second does not have a seek value, but it may be in the range of the last couple seconds
+
+          # for now just read the entire index and walk forwards/backwards
+          # to do that we walk through entire array and find the max/min index (if accept_before?/accept_after?)
+          # that is either before or after `second` (if accept_before?/accept_after?)
+
+          case read(key0, key1, timestamp) do
+            {:ok, data} ->
+              seeks = data.seeks
+
+              seeks
+              |> Stream.with_index()
+              |> Enum.reduce(
+                %{
+                  index: nil
+                },
+                fn {seek_index, _}, acc ->
+                  acc_index =
+                    cond do
+                      acc.index != nil -> acc.index
+                      accept_before? -> -1
+                      accept_after? -> 9_999_999_999_999_999
+                    end
+
+                  {valid_index?, better_index?} =
+                    cond do
+                      accept_before? ->
+                        {seek_index < second, seek_index > acc_index}
+
+                      accept_after? ->
+                        {seek_index < second, seek_index < acc_index}
+
+                      true ->
+                        raise "invalid state"
+                    end
+
+                  if valid_index? and better_index? do
+                    Map.put(acc, :index, seek_index)
+                  else
+                    acc
+                  end
+                end
+              )
+              |> then(fn
+                %{index: nil} ->
+                  0
+
+                %{index: v} when not is_nil(v) ->
+                  seeks
+                  |> Enum.at(v)
+                  |> then(fn
+                    nil ->
+                      raise "invalid logic conclusion. should have a seek value if index is not nil"
+
+                    v ->
+                      v
+                  end)
+              end)
+
+            {:error, _} = v ->
+              v
+          end
+        else
+          {:ok, seek_value}
+        end
       else
         {:error, reason} ->
           {:error, reason}

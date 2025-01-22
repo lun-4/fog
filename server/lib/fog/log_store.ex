@@ -289,7 +289,7 @@ defmodule Fog.LogStore do
         start_offset =
           if contains_since? do
             Logger.debug("using index_ts_v1 index for since")
-            {:ok, start_offset} = Fog.IndexStore.read_at(key0, key1, since)
+            {:ok, start_offset} = Fog.IndexStore.read_at(key0, key1, since, accept_before?: true)
             start_offset
           else
             0
@@ -298,7 +298,7 @@ defmodule Fog.LogStore do
         end_offset =
           if contains_until? do
             Logger.debug("using index_ts_v1 index for until")
-            {:ok, end_offset} = Fog.IndexStore.read_at(key0, key1, until)
+            {:ok, end_offset} = Fog.IndexStore.read_at(key0, key1, until, accept_after?: true)
             end_offset
           else
             File.stat!(file_path) |> Map.get(:size)
@@ -415,7 +415,7 @@ defmodule Fog.LogStore do
 
     case File.open(path, [:read]) do
       {:error, :enoent} ->
-        # TODO we need to generate a seek array that is [-1, -1, -1...] on this case
+        # we need to generate a seek array that is [-1, -1, -1...] on this case
         really_build_index_ts_v1(key0, key1, initial_datetime, [])
 
       {:ok, file} ->
