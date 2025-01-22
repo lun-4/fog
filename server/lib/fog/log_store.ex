@@ -413,8 +413,17 @@ defmodule Fog.LogStore do
       path
       |> datetime_from_path
 
-    {:ok, file} = File.open(path, [:read])
+    case File.open(path, [:read]) do
+      {:error, :enoent} ->
+        # TODO we need to generate a seek array that is [-1, -1, -1...] on this case
+        raise "TODO: what to do when the file is empty or doesnt exist"
 
+      {:ok, fd} ->
+        really_build_index_ts_v1(key0, key1, initial_datetime, fd)
+    end
+  end
+
+  defp really_build_index_ts_v1(key0, key1, initial_timestamp, file) do
     # build index by going through every line
 
     Stream.unfold({:file.position(file, :cur), file}, fn

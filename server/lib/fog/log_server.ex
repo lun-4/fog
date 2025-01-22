@@ -86,8 +86,13 @@ defmodule Fog.LogServer do
       if maybe_index_data == nil do
         case Fog.IndexStore.read(key0, key1, timestamp) do
           {:error, :enoent} ->
-            # we need to build the index for this file
-            :todo
+            # we need to build the index for this file right now as it's not available
+
+            # TODO (optimization): there should be an even higher level process that takes care of turning
+            # off index_ts_v1 for log files that are below 1MB, turning it on when they are over 1MB
+            # (and backfilling missing days)
+            :ok = Fog.LogStore.build_index_ts_v1(key0, key1, timestamp)
+            Fog.IndexStore.read(key0, key1, timestamp)
 
           {:ok, _} = v ->
             v
