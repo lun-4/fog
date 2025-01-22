@@ -51,7 +51,7 @@ defmodule Fog.LogServer do
   def init(opts) do
     k0k1 = opts |> Keyword.fetch!(:k0k1)
     Logger.info("Starting #{__MODULE__} k0k1=#{inspect(k0k1)}")
-    {:ok, %{opts: opts, k0k1: k0k1}}
+    {:ok, %{opts: opts, k0k1: k0k1, fds: %{}}}
   end
 
   @impl true
@@ -64,14 +64,41 @@ defmodule Fog.LogServer do
     {key0, key1} = state.k0k1
     log_path = Fog.LogStore.file_for(:writing, key0, key1, timestamp)
 
-    # TODO (optimization): we can hold file descriptors at runtime instead of open/close all the time
-    {:ok, file} = File.open(log_path, [:append])
+    maybe_fd = state.fds |> Map.get(log_path)
+
+    {:ok, fd} =
+      case maybe_fd do
+        {fd, _} -> {:ok, fd}
+        nil -> File.open(log_path, [:append])
+      end
+
     timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
     # <version>\t<timestamp>\t<log itself>
-    IO.write(file, "1\t#{timestamp_unix_ms}\t#{line}\n")
-    File.close(file)
+    IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
     Logger.debug("Logged line #{line} at timestamp #{timestamp} to file @ #{log_path}.")
-    {:reply, :ok, state}
+    fd_timestamp = System.monotonic_time()
+    {:reply, :ok, put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))}
+  end
+
+  @impl true
+  def handle_cast(:check_unused_fds, state) do
+    state.fds
+    |> Enum.map(fn {path, {fd, fd_timestamp}} ->
+      current_timestamp = System.monotonic_time()
+      delta = System.convert_time_unit(current_timestamp - fd_timestamp, :native, :second)
+      # if it's been an hour, we should close it
+      if delta > 3600 do
+        Logger.debug("closing unused file descriptor for #{path}, unused for #{delta} seconds")
+        File.close(fd)
+        nil
+      else
+        {fd, fd_timestamp}
+      end
+    end)
+    |> Enum.filter(fn v -> v != nil end)
+    |> then(fn new_fds ->
+      {:noreply, put_in(state.fds, new_fds)}
+    end)
   end
 
   @impl true
