@@ -181,6 +181,10 @@ defmodule Fog.IndexStore do
           # to do that we walk through entire array and find the max/min index (if accept_before?/accept_after?)
           # that is either before or after `second` (if accept_before?/accept_after?)
 
+          Logger.debug(
+            "read_at falling back to entire-index-read due to missing seek value on #{second} for #{key0}/#{key1}/#{timestamp}"
+          )
+
           case read(key0, key1, timestamp) do
             {:ok, data} ->
               seeks = data.seeks

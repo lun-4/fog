@@ -269,4 +269,41 @@ defmodule Fog.LogStoreBenchmarkTest do
     assert returned_log1.text == log1.text
     assert returned_log2.text == log2.text
   end
+
+  test "an incomplete index still returns good data", %{
+    key0_large: key0_large,
+    key1_large: key1_large
+  } do
+    {timestamp, logs} =
+      write_test_data(key0_large, key1_large, 1000)
+
+    # intentionally generate an incomplete index
+    incomplete_index_seeks = List.duplicate(-1, 86400)
+    index_data = %Fog.IndexStore.Data{seeks: incomplete_index_seeks}
+    :ok = Fog.IndexStore.write(key0_large, key1_large, timestamp, index_data)
+
+    log1 = logs |> Enum.at(30)
+    log2 = logs |> Enum.at(100)
+
+    {:ok, returned_logs} =
+      Fog.LogStore.query(
+        %{
+          "selectors" => ["#{key0_large}.#{key1_large}"],
+          "since" => log1.timestamp |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          # include the next second lol
+          "until" =>
+            (log2.timestamp + 1000) |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          "limit" => "1000"
+        },
+        forced_features: [
+          :index_ts_v1
+        ]
+      )
+
+    returned_log1 = returned_logs |> Enum.at(0)
+    returned_log2 = returned_logs |> Enum.at(-1)
+
+    assert returned_log1.text == log1.text
+    assert returned_log2.text == log2.text
+  end
 end
