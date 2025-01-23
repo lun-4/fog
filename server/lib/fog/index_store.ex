@@ -35,7 +35,7 @@ defmodule Fog.IndexStore do
     case File.stat(path) do
       # our index files are around ~600KB, it only really starts to make sense once a logfile is above
       # that by quite a margin. 1MB as the threshold should work.
-      {:ok, stat} -> stat.size > 1024 * 1024 * 1024
+      {:ok, stat} -> stat.size > 1024 * 1024
       {:error, :enoent} -> false
     end
   end

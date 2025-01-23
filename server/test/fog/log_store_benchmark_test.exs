@@ -24,12 +24,16 @@ defmodule Fog.LogStoreBenchmarkTest do
      }}
   end
 
-  defp write_test_data(key0, key1, amount) do
+  defp write_test_data(key0, key1, amount, base_timestamp \\ nil) do
     base_timestamp =
-      DateTime.utc_now()
-      |> DateTime.add(-:rand.uniform(100), :day)
-      |> DateTime.to_date()
-      |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+      if base_timestamp != nil do
+        base_timestamp
+      else
+        DateTime.utc_now()
+        |> DateTime.add(-:rand.uniform(100), :day)
+        |> DateTime.to_date()
+        |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+      end
 
     base_timestamp_unix =
       base_timestamp
@@ -42,12 +46,13 @@ defmodule Fog.LogStoreBenchmarkTest do
 
         text = "Sample log entry #{:rand.uniform(100)} for testing (idx #{idx})"
 
-        Fog.LogStore.store(
-          key0,
-          key1,
-          text,
-          timestamp
-        )
+        :ok =
+          Fog.LogStore.store(
+            key0,
+            key1,
+            text,
+            timestamp
+          )
 
         %{timestamp: timestamp, text: text}
       end)
@@ -305,5 +310,47 @@ defmodule Fog.LogStoreBenchmarkTest do
 
     assert returned_log1.text == log1.text
     assert returned_log2.text == log2.text
+  end
+
+  test "log server does not build index unless log file is large enough", %{
+    key0_large: key0_large,
+    key1_large: key1_large
+  } do
+    {timestamp, logs} =
+      write_test_data(key0_large, key1_large, 1000)
+
+    assert length(logs) == 1000
+
+    {:ok, server} = Fog.LogServer.get_or_start_server(key0_large, key1_large)
+    server_state = :sys.get_state(server)
+    assert server_state.index_ts_v1 == %{}
+
+    {_timestamp, logs} =
+      write_test_data(key0_large, key1_large, 20000, timestamp |> DateTime.add(10, :millisecond))
+
+    assert length(logs) == 20000
+
+    {:ok, returned_logs} =
+      Fog.LogStore.query(%{
+        "selectors" => ["#{key0_large}.#{key1_large}"],
+        "since" => timestamp |> DateTime.to_iso8601(),
+        "until" =>
+          DateTime.utc_now()
+          |> DateTime.to_iso8601(),
+        "limit" => "100000"
+      })
+
+    assert length(returned_logs) == 21000
+
+    server_state = :sys.get_state(server)
+    assert Enum.count(server_state.index_ts_v1) > 0
+
+    {_path, {_k0, _k1, _ts, index_data}} = Enum.at(server_state.index_ts_v1, 0)
+    assert length(index_data.seeks) > 0
+
+    assert index_data.seeks
+           # first 100 seconds should be good (aka no -1)
+           |> Enum.slice(0..100)
+           |> Enum.all?(fn x -> x != -1 end)
   end
 end
