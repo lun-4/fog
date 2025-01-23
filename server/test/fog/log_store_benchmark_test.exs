@@ -35,19 +35,24 @@ defmodule Fog.LogStoreBenchmarkTest do
       base_timestamp
       |> DateTime.to_unix(:millisecond)
 
-    1..amount
-    |> Enum.each(fn idx ->
-      timestamp = base_timestamp_unix + idx * 1000
+    logs =
+      1..amount
+      |> Enum.map(fn idx ->
+        timestamp = base_timestamp_unix + idx * 1000
 
-      Fog.LogStore.store(
-        key0,
-        key1,
-        "Sample log entry #{:rand.uniform(100)} for testing (idx #{idx})",
-        timestamp
-      )
-    end)
+        text = "Sample log entry #{:rand.uniform(100)} for testing (idx #{idx})"
 
-    base_timestamp
+        Fog.LogStore.store(
+          key0,
+          key1,
+          text,
+          timestamp
+        )
+
+        %{timestamp: timestamp, text: text}
+      end)
+
+    {base_timestamp, logs}
   end
 
   @tag :benchmark_writes
@@ -81,7 +86,7 @@ defmodule Fog.LogStoreBenchmarkTest do
     )
   end
 
-  test "index works", %{
+  test "index building works", %{
     key0_large: key0_large,
     key1_large: key1_large
   } do
@@ -93,18 +98,15 @@ defmodule Fog.LogStoreBenchmarkTest do
         write_test_data(key0_large, key1_large, 10000),
         write_test_data(key0_large, key1_large, 10000)
       ]
+      |> Stream.map(fn {t, _} -> t end)
       |> Enum.sort(DateTime)
       |> then(fn tstamps ->
-        IO.inspect(tstamps, label: "tstamps")
-
         {
           tstamps,
           tstamps |> Enum.at(0),
           tstamps |> Enum.at(-1)
         }
       end)
-      |> IO.inspect(label: "large timestamps")
-      |> dbg
 
     large_timestamps
     |> Enum.each(fn timestamp ->
@@ -144,10 +146,9 @@ defmodule Fog.LogStoreBenchmarkTest do
         write_test_data(key0_large, key1_large, 10000),
         write_test_data(key0_large, key1_large, 10000)
       ]
+      |> Stream.map(fn {t, _} -> t end)
       |> Enum.sort(DateTime)
       |> then(fn tstamps ->
-        IO.inspect(tstamps)
-
         {
           tstamps,
           tstamps |> Enum.at(0),
@@ -210,5 +211,39 @@ defmodule Fog.LogStoreBenchmarkTest do
         fast_warning: false
       ]
     )
+  end
+
+  test "using the index gives correct data", %{
+    key0_large: key0_large,
+    key1_large: key1_large
+  } do
+    {timestamp, logs} =
+      write_test_data(key0_large, key1_large, 1000)
+
+    :ok = Fog.LogStore.build_index_ts_v1(key0_large, key1_large, timestamp)
+
+    log1 = logs |> Enum.at(30)
+    log2 = logs |> Enum.at(100)
+
+    {:ok, returned_logs} =
+      Fog.LogStore.query(
+        %{
+          "selectors" => ["#{key0_large}.#{key1_large}"],
+          "since" => log1.timestamp |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          # include the next second lol
+          "until" =>
+            (log2.timestamp + 1000) |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          "limit" => "1000"
+        },
+        forced_features: [
+          :index_ts_v1
+        ]
+      )
+
+    returned_log1 = returned_logs |> Enum.at(0)
+    returned_log2 = returned_logs |> Enum.at(-1)
+
+    assert returned_log1.text == log1.text
+    assert returned_log2.text == log2.text
   end
 end
