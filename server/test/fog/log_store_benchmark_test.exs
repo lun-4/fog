@@ -245,5 +245,28 @@ defmodule Fog.LogStoreBenchmarkTest do
 
     assert returned_log1.text == log1.text
     assert returned_log2.text == log2.text
+
+    # test without index
+
+    {:ok, returned_logs} =
+      Fog.LogStore.query(
+        %{
+          "selectors" => ["#{key0_large}.#{key1_large}"],
+          "since" => log1.timestamp |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          # include the next second lol
+          "until" =>
+            (log2.timestamp + 1000) |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
+          "limit" => "1000"
+        },
+        unwanted_features: [
+          :index_ts_v1
+        ]
+      )
+
+    returned_log1 = returned_logs |> Enum.at(0)
+    returned_log2 = returned_logs |> Enum.at(-1)
+
+    assert returned_log1.text == log1.text
+    assert returned_log2.text == log2.text
   end
 end

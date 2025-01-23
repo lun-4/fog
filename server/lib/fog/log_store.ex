@@ -297,7 +297,17 @@ defmodule Fog.LogStore do
         end_offset =
           if contains_until? do
             Logger.debug("using index_ts_v1 index for until")
-            {:ok, end_offset} = Fog.IndexStore.read_at(key0, key1, until, accept_after?: true)
+
+            {:ok, end_offset} =
+              Fog.IndexStore.read_at(
+                key0,
+                key1,
+                # if until is say, 00:00:30.5 we want to stop reading at the 00:00:31 mark instead of 00:00:30
+                # (we'll filter either way so extra seconds just imply more bytes, rather than actually incorrect data)
+                until
+                |> DateTime.add(1, :second),
+                accept_after?: true
+              )
 
             if end_offset == -1 do
               default_end_offset
@@ -367,15 +377,11 @@ defmodule Fog.LogStore do
         %LogLine{} = l ->
           if verbose_debug? do
             Logger.debug(
-              "line since #{l.timestamp} >= #{inspect(since)} = #{inspect(l.timestamp >= since)}"
-            )
-
-            Logger.debug(
-              "line until #{l.timestamp} <= #{inspect(until)} = #{inspect(l.timestamp <= until)}"
+              "line #{l.text}, timestamp #{l.timestamp / 1000}, is above since? #{inspect(l.timestamp >= since)}, is below until? #{inspect(l.timestamp <= until)}"
             )
           end
 
-          l.timestamp >= since and l.timestamp <= until
+          l.timestamp >= since and l.timestamp < until
       end)
     end
     |> then(fn
