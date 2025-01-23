@@ -116,7 +116,7 @@ defmodule Fog.LogServer do
     # TODO (optimization): batch to temporary file then fsync+rename
     # <version>\t<timestamp>\t<log itself>
     IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
-    Logger.debug("Logged line #{line} at timestamp #{timestamp} to file @ #{log_path}.")
+    Logger.debug("log line=#{line}, tstamp=#{timestamp}, file=#{log_path}")
     fd_timestamp = System.monotonic_time()
 
     # if index_data didn't have this second of the day, set it

@@ -297,9 +297,6 @@ defmodule Fog.IntegrationTest do
     rjson = json_response(conn, 200)
     logs = rjson["logs"]
 
-    # Should only see logs from 2 hours ago and 1 hour ago
-    assert length(logs) == 2
-
     # Verify we don't see the most recent log
     refute Enum.any?(logs, fn %{"text" => text} ->
              String.contains?(text, "log from recent")
@@ -313,6 +310,9 @@ defmodule Fog.IntegrationTest do
     assert Enum.any?(logs, fn %{"text" => text} ->
              String.contains?(text, "log from middle")
            end)
+
+    # Should only see logs from 2 hours ago and 1 hour ago
+    assert length(logs) == 2
   end
 
   defp assert_receive_logs(key0, key1, logs) when is_list(logs),

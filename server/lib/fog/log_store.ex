@@ -25,34 +25,20 @@ defmodule Fog.LogStore do
     ])
   end
 
-  def file_for(:reading, key0, key1, {initial_timestamp, final_timestamp}) do
-    possible_path =
-      file_for(:writing, key0, key1, initial_timestamp)
-
-    if File.exists?(possible_path) do
-      {initial_timestamp, possible_path}
-    else
-      # move forward by a day, unless we hit final_timestamp
-      next_timestamp = initial_timestamp |> DateTime.add(1, :day)
-
-      Logger.warning("#{key0}/#{key1} has no file for given timestamp #{initial_timestamp}")
-
-      cond do
-        # blew past final timestamp
-        # next_timestamp may be on the same day as final_timestamp, but at a different hour that is :gt.
-        # to prevent this, compared with +1d of final_timestamp, should do the trick
-        DateTime.compare(next_timestamp, final_timestamp |> DateTime.add(1, :day)) == :gt ->
-          Logger.debug(
-            "next_timestamp (#{inspect(next_timestamp)}) is after #{inspect(final_timestamp)}, stopping"
-          )
-
-          nil
-
-        true ->
-          Logger.debug("NEXT")
-          file_for(:reading, key0, key1, {next_timestamp, final_timestamp})
-      end
-    end
+  @spec files_for(String.t(), String.t(), DateTime.t(), DateTime.t()) :: list()
+  defp files_for(key0, key1, initial_timestamp, final_timestamp) do
+    Date.range(
+      initial_timestamp |> DateTime.to_date(),
+      final_timestamp |> DateTime.to_date()
+    )
+    |> Stream.map(fn date ->
+      timestamp = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+      {timestamp, file_for(:writing, key0, key1, timestamp)}
+    end)
+    |> Stream.filter(fn {_, possible_path} ->
+      File.exists?(possible_path)
+    end)
+    |> Enum.to_list()
   end
 
   def store(key0, key1, line, timestamp \\ nil) do
@@ -179,6 +165,7 @@ defmodule Fog.LogStore do
         matches_selectors?(k0k1, params["selectors"])
       end)
 
+    Logger.debug("wanted keys: #{inspect(wanted_keys)}")
     # for each key, find the initial file based on the since parameter
     since_default = DateTime.utc_now() |> DateTime.add(-30, :second)
     {:ok, since} = (params["since"] || DateTime.to_iso8601(since_default)) |> parse_datetime
@@ -189,11 +176,13 @@ defmodule Fog.LogStore do
 
     files =
       wanted_keys
-      |> Enum.map(fn {key0, key1} = d ->
-        maybe_path = file_for(:reading, key0, key1, {since, until})
-        {since, until, d, maybe_path}
+      |> Enum.map(fn {key0, key1} = k0k1 ->
+        files_for(key0, key1, since, until)
+        |> Enum.map(fn read_path ->
+          {since, until, k0k1, read_path}
+        end)
       end)
-      |> Enum.filter(fn {_, _, _, maybe_path} -> maybe_path != nil end)
+      |> List.flatten()
       |> Enum.sort_by(fn {_, _, _, {%DateTime{} = dt, _}} -> dt end, :asc)
 
     {files, since, until}
@@ -326,7 +315,6 @@ defmodule Fog.LogStore do
         {0, File.stat!(file_path) |> Map.get(:size)}
       end
 
-    # TODO (optimization): should close file lol
     {:ok, file} = File.open(file_path, [:read])
     Logger.debug("fseek on #{file_path} to #{start_offset}")
     {:ok, _} = :file.position(file, start_offset)
@@ -337,7 +325,10 @@ defmodule Fog.LogStore do
     until = until |> DateTime.to_unix(:millisecond)
 
     Logger.debug("start offset #{start_offset}, end offset #{end_offset}")
-    Logger.debug("getting #{amount} lines from #{since} to #{until} on #{file_path}")
+
+    Logger.debug(
+      "getting #{amount} bytes from #{since / 1000} to #{until / 1000} on #{file_path}"
+    )
 
     # TODO (optimization): use Stream instead of reading entire file into memory
     with {:ok, data} <- :file.read(file, amount) do
@@ -348,13 +339,13 @@ defmodule Fog.LogStore do
           Logger.warning("no logs found, since=#{since} until=#{inspect(until)}")
 
         v ->
-          Logger.debug("got #{length(v)} lines, since=#{inspect(since)} until=#{inspect(until)}")
+          Logger.debug("got #{length(v)} lines, since=#{since / 1000} until=#{until / 1000}")
           v
       end)
       |> Enum.map(fn line ->
         cond do
           line == "" ->
-            Logger.warning("empty line in #{inspect(file_path)}")
+            Logger.warning("got an empty line in #{inspect(file_path)}")
             nil
 
           grep != nil and not String.contains?(line, grep) ->
