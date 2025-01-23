@@ -31,6 +31,15 @@ defmodule Fog.IndexStore do
     ])
   end
 
+  def should_index_log_path?(path) do
+    case File.stat(path) do
+      # our index files are around ~600KB, it only really starts to make sense once a logfile is above
+      # that by quite a margin. 1MB as the threshold should work.
+      {:ok, stat} -> stat.size > 1024 * 1024 * 1024
+      {:error, :enoent} -> false
+    end
+  end
+
   alias Fog.IndexStore.Data
   @spec serialize!(Data.t()) :: binary()
   defp serialize!(data) when is_map(data) do
@@ -47,7 +56,7 @@ defmodule Fog.IndexStore do
     serialized = <<checksum::signed-big-64, seeks_bin::binary>>
 
     if byte_size(serialized) != @total_file_size do
-      raise "data size: #{length(serialized)} bytes, expected #{@total_file_size} bytes"
+      raise "data size: #{byte_size(serialized)} bytes, expected #{@total_file_size} bytes"
     end
 
     serialized

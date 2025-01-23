@@ -81,26 +81,29 @@ defmodule Fog.LogServer do
     log_path = Fog.LogStore.file_for(:writing, key0, key1, timestamp)
     index_path = Fog.IndexStore.path_for(key0, key1, timestamp)
 
+    build_index_ts_v1? = Fog.IndexStore.should_index_log_path?(log_path)
     maybe_index_data = state.index_ts_v1 |> Map.get(index_path)
 
     {:ok, index_data} =
-      if maybe_index_data == nil do
-        case Fog.IndexStore.read(key0, key1, timestamp) do
-          {:error, :enoent} ->
-            # we need to build the index for this file right now as it's not available
+      cond do
+        not build_index_ts_v1? ->
+          {:ok, nil}
 
-            # TODO (index): there should be an even higher level process that takes care of turning
-            # off index_ts_v1 for log files that are below 1MB, turning it on when they are over 1MB
-            # (and backfilling missing days)
-            :ok = Fog.LogStore.build_index_ts_v1(key0, key1, timestamp)
-            Fog.IndexStore.read(key0, key1, timestamp)
+        maybe_index_data == nil ->
+          case Fog.IndexStore.read(key0, key1, timestamp) do
+            {:error, :enoent} ->
+              # we need to build the index for this file right now as it's not available
+              # and we want it (as our log file is bigger than the desired indexable size)
+              :ok = Fog.LogStore.build_index_ts_v1(key0, key1, timestamp)
+              Fog.IndexStore.read(key0, key1, timestamp)
 
-          {:ok, _} = v ->
-            v
-        end
-      else
-        {_, _, _, real_index_data} = maybe_index_data
-        {:ok, real_index_data}
+            {:ok, _} = v ->
+              v
+          end
+
+        true ->
+          {_, _, _, real_index_data} = maybe_index_data
+          {:ok, real_index_data}
       end
 
     maybe_fd = state.fds |> Map.get(log_path)
@@ -122,7 +125,13 @@ defmodule Fog.LogServer do
     # if index_data didn't have this second of the day, set it
     # (writing to the index file happens asynchronously)
     second_of_day = Fog.IndexStore.second_of_day(timestamp)
-    maybe_seek = index_data.seeks |> Enum.at(second_of_day)
+
+    maybe_seek =
+      if index_data != nil do
+        index_data.seeks |> Enum.at(second_of_day)
+      else
+        -1
+      end
 
     # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
     # one entire minute with very useful data in-memory...
@@ -136,10 +145,14 @@ defmodule Fog.LogServer do
     state = put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))
 
     state =
-      put_in(
-        state.index_ts_v1,
-        Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
-      )
+      if build_index_ts_v1? do
+        put_in(
+          state.index_ts_v1,
+          Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
+        )
+      else
+        state
+      end
 
     state =
       put_in(
@@ -159,11 +172,16 @@ defmodule Fog.LogServer do
     # do this by reading the index then comparing, if it's a different serialization then we must ignore our own data
     # and then rebuild later on
     state.index_ts_v1
+    |> Stream.filter(fn {_, {_, _, _, index_data}} ->
+      index_data != nil
+    end)
     |> Enum.map(fn {_, {key0, key1, timestamp, index_data}} ->
-      Logger.debug("Syncing index for #{key0}, #{key1}, #{timestamp}...")
+      Logger.debug("Syncing index for #{key0}/#{key1}/#{timestamp}...")
       Fog.IndexStore.write(key0, key1, timestamp, index_data)
     end)
-    |> then(fn _ ->
+    |> then(fn index_ts_v1 ->
+      Logger.info("Synced index for all #{Enum.count(index_ts_v1)} keys")
+
       # TODO (index): when do we remove index_datas from memory???
       # maybe after 3 days? so that server doesn't just leak memory every day and uptime can be high lol
       {:noreply, state}
