@@ -201,7 +201,7 @@ defmodule Fog.LogServer do
         File.close(fd)
         nil
       else
-        {fd, fd_timestamp}
+        {path, {fd, fd_timestamp}}
       end
     end)
     |> Enum.filter(fn v -> v != nil end)
