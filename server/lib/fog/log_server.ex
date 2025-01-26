@@ -51,6 +51,7 @@ defmodule Fog.LogServer do
   def init(opts) do
     k0k1 = opts |> Keyword.fetch!(:k0k1)
     Logger.info("Starting #{__MODULE__} k0k1=#{inspect(k0k1)}")
+    :ok = File.mkdir_p(Fog.LogServer.tmp_path())
 
     schedule_unused_fds()
     schedule_index_syncing()
