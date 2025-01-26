@@ -90,7 +90,7 @@ defmodule Fog.IndexStore do
 
   def random_temp_filename(prefix) do
     random_name = :crypto.strong_rand_bytes(8) |> Base.encode16()
-    Path.join(System.tmp_dir!(), prefix <> random_name)
+    Path.join(Fog.LogStore.tmp_path(), prefix <> random_name)
   end
 
   @spec write(String.t(), String.t(), DateTime.t(), Data.t()) :: :ok | {:error, term()}

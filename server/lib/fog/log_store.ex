@@ -12,6 +12,10 @@ defmodule Fog.LogStore do
     Path.expand(cfg[:data_path])
   end
 
+  def tmp_path do
+    Path.join([data_path(), "_fog_internal_tmp"])
+  end
+
   def folder_for(key0, key1) do
     path = Path.join([data_path(), key0, key1])
     File.mkdir_p!(path)
