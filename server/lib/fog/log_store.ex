@@ -241,7 +241,16 @@ defmodule Fog.LogStore do
     end
 
     line_timestamp_unix_str = parsed |> Enum.at(1)
-    {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
+
+    line_timestamp_unix =
+      case Integer.parse(line_timestamp_unix_str) do
+        {num, ""} when is_integer(num) ->
+          num
+
+        _ ->
+          raise "invalid line timestamp: #{line_timestamp_unix_str}, k0k1: #{key0}.#{key1} line is #{line}"
+      end
+
     logline = parsed |> Enum.slice(2..length(parsed)) |> Enum.join("\t")
 
     %LogLine{
