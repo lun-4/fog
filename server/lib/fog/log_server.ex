@@ -113,8 +113,13 @@ defmodule Fog.LogServer do
 
     {:ok, fd} =
       case maybe_fd do
-        {fd, _} -> {:ok, fd}
-        nil -> File.open(log_path, [:append])
+        {fd, _} ->
+          {:ok, fd}
+
+        nil ->
+          with {:ok, fd} <- File.open(log_path, [:append]) do
+            {:ok, _} = :file.position(fd, :eof)
+          end
       end
 
     timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
