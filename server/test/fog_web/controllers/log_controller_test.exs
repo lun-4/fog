@@ -95,9 +95,7 @@ defmodule Fog.IntegrationTest do
     } do
       assert_receive {:ws_message, %{"op" => "hello", "data" => %{}}}, 1000
       TestAgent.send_log(client, key0, key1, test_log)
-
-      # wait a brief moment for log processing
-      Process.sleep(100)
+      assert_receive_logs(key0, key1, 1)
 
       conn =
         conn
@@ -145,7 +143,7 @@ defmodule Fog.IntegrationTest do
         TestAgent.send_log(client, key0, key1, "log entry #{i}")
       end
 
-      Process.sleep(100)
+      assert_receive_logs(key0, key1, 5)
 
       # Query with limit=3
       conn =
@@ -206,7 +204,7 @@ defmodule Fog.IntegrationTest do
       Enum.each(test_logs, fn log ->
         TestAgent.send_log(client, key0, key1, log)
         # Small delay between logs
-        Process.sleep(50)
+        Process.sleep(30)
       end)
 
       # Wait for events and verify
@@ -279,7 +277,7 @@ defmodule Fog.IntegrationTest do
     end)
 
     # Allow logs to be processed
-    Process.sleep(100)
+    assert_receive_logs(key0, key1, test_logs)
 
     # Query with until set to 20 minutes ago
     twenty_mins_ago =
@@ -299,9 +297,6 @@ defmodule Fog.IntegrationTest do
     rjson = json_response(conn, 200)
     logs = rjson["logs"]
 
-    # Should only see logs from 2 hours ago and 1 hour ago
-    assert length(logs) == 2
-
     # Verify we don't see the most recent log
     refute Enum.any?(logs, fn %{"text" => text} ->
              String.contains?(text, "log from recent")
@@ -315,6 +310,21 @@ defmodule Fog.IntegrationTest do
     assert Enum.any?(logs, fn %{"text" => text} ->
              String.contains?(text, "log from middle")
            end)
+
+    # Should only see logs from 2 hours ago and 1 hour ago
+    assert length(logs) == 2
+  end
+
+  defp assert_receive_logs(key0, key1, logs) when is_list(logs),
+    do: assert_receive_logs(key0, key1, length(logs))
+
+  defp assert_receive_logs(key0, key1, logs) when is_number(logs) do
+    1..logs
+    |> Enum.each(fn _ ->
+      assert_receive {:ws_message,
+                      %{"op" => "send_ack", "data" => %{"key0" => ^key0, "key1" => ^key1}}},
+                     2000
+    end)
   end
 
   test "cli query with grep parameter", %{
@@ -324,6 +334,7 @@ defmodule Fog.IntegrationTest do
     key1: key1,
     conn: conn
   } do
+    assert_receive {:ws_message, %{"op" => "hello"}}, 1000
     # Send logs with different patterns
     test_logs = [
       "ERROR: database connection failed",
@@ -338,7 +349,7 @@ defmodule Fog.IntegrationTest do
     end)
 
     # Allow logs to be processed
-    Process.sleep(100)
+    assert_receive_logs(key0, key1, test_logs)
 
     # Query with grep for ERROR logs
     conn =

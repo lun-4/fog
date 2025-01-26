@@ -22,9 +22,10 @@ type Message struct {
 }
 
 type LogData struct {
-	Key0 string `json:"key0"`
-	Key1 string `json:"key1"`
-	Data string `json:"data"`
+	Key0      string `json:"key0"`
+	Key1      string `json:"key1"`
+	Data      string `json:"data"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 type Agent struct {
@@ -41,6 +42,7 @@ type Agent struct {
 	setupFileWatch  chan error
 	heartbeatPeriod time.Duration
 	DebugMode       bool
+	TraceMode       bool
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
@@ -60,6 +62,11 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 
 func (a *Agent) Debug(fmt string, args ...any) {
 	if a.DebugMode {
+		log.Printf(fmt, args...)
+	}
+}
+func (a *Agent) Trace(fmt string, args ...any) {
+	if a.TraceMode {
 		log.Printf(fmt, args...)
 	}
 }
@@ -140,7 +147,7 @@ func (a *Agent) handleWebSocket() {
 			return
 
 		case msg := <-a.sendChan:
-			a.Debug("sending data: %v", msg)
+			a.Trace("sending data: %v", msg)
 			if !a.isConnected {
 				a.reconnect()
 			}
@@ -204,7 +211,7 @@ func (a *Agent) handleServerMessages() {
 				continue
 			}
 
-			a.Debug("received message %v", msg)
+			a.Trace("received message %v", msg)
 			switch msg.Op {
 			case "heartbeat":
 				err := a.conn.WriteJSON(Message{Op: "heartbeat_ack"})
@@ -214,6 +221,8 @@ func (a *Agent) handleServerMessages() {
 				}
 			case "heartbeat_ack":
 				// Expected response to our heartbeat
+			case "send_ack":
+				// Expected response to our send
 			default:
 				log.Printf("Received unknown message type: %s", msg.Op)
 			}
@@ -271,7 +280,7 @@ func (a *Agent) watchFile(readFromBeginning bool) error {
 			return nil
 
 		case event := <-watcher.Events:
-			a.Debug("got event from fsnotify: %v", event)
+			a.Trace("got event from fsnotify: %v", event)
 			if event.Has(fsnotify.Write) {
 				a.readAndSend(reader)
 			} else if event.Has(fsnotify.Rename) {
@@ -313,9 +322,10 @@ func (a *Agent) readAndSend(reader *bufio.Reader) {
 		a.sendChan <- Message{
 			Op: "send",
 			Data: LogData{
-				Key0: a.key0,
-				Key1: a.key1,
-				Data: line,
+				Key0:      a.key0,
+				Key1:      a.key1,
+				Data:      line,
+				Timestamp: time.Now().UnixMilli(),
 			},
 		}
 	}
@@ -335,6 +345,15 @@ func main() {
 	}
 
 	agent := NewAgent(*serverURL, *token, *logFile, *key0, *key1)
+	if os.Getenv("DEBUG") == "1" {
+		agent.DebugMode = true
+	}
+	if os.Getenv("TRACE") == "1" {
+		agent.TraceMode = true
+	}
+	if agent.TraceMode {
+		agent.DebugMode = true
+	}
 
 	// Initial connection
 	err := agent.connect()

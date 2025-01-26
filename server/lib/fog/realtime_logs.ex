@@ -74,7 +74,7 @@ defmodule Fog.LogStore.Realtime do
       nil ->
         {:reply, :ok, state}
 
-      {filter_hash, client_pid} ->
+      {filter_hash, _client_pid} ->
         # Remove client from the filter's client list
         new_filters =
           case Map.get(state.filters, filter_hash) do

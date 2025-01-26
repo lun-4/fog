@@ -47,7 +47,9 @@ defmodule Fog.MixProject do
       {:dns_cluster, "~> 0.1.1"},
       {:bandit, "~> 1.5"},
       {:websockex, "~> 0.4.3"},
-      {:httpoison, "~> 2.2.1"}
+      {:httpoison, "~> 2.2.1"},
+      {:benchee, "~> 1.0", only: [:test, :dev]},
+      {:benchee_html, "~> 1.0", only: [:test, :dev]}
     ]
   end
 
@@ -62,7 +64,11 @@ defmodule Fog.MixProject do
       setup: ["deps.get", "ecto.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+      test: [
+        "ecto.create --quiet",
+        "ecto.migrate --quiet",
+        "test --exclude benchmark --exclude benchmark_writes"
+      ]
     ]
   end
 end

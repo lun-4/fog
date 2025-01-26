@@ -34,6 +34,19 @@ defmodule FogWeb.AgentSocket do
 
   defp json(msg), do: {:text, Jason.encode!(msg)}
 
+  def handle_info({:log_server_ack, k0, k1}, state) do
+    Logger.debug("ack #{k0} #{k1}")
+
+    {:push,
+     json(%{
+       op: "send_ack",
+       data: %{
+         key0: k0,
+         key1: k1
+       }
+     }), state}
+  end
+
   def handle_info(:validate_auth, state) do
     given_token = state.params["token"]
 
@@ -85,7 +98,7 @@ defmodule FogWeb.AgentSocket do
          state
        ) do
     :ok = Fog.LogStore.store(key0, key1, log_line, data |> Map.get("timestamp"))
-    {:reply, :ok, json(%{op: "ack"}), state}
+    {:ok, state}
   end
 
   defp handle_message(_message, _opts, state) do
