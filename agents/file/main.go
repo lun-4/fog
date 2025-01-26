@@ -22,9 +22,10 @@ type Message struct {
 }
 
 type LogData struct {
-	Key0 string `json:"key0"`
-	Key1 string `json:"key1"`
-	Data string `json:"data"`
+	Key0      string `json:"key0"`
+	Key1      string `json:"key1"`
+	Data      string `json:"data"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 type Agent struct {
@@ -321,9 +322,10 @@ func (a *Agent) readAndSend(reader *bufio.Reader) {
 		a.sendChan <- Message{
 			Op: "send",
 			Data: LogData{
-				Key0: a.key0,
-				Key1: a.key1,
-				Data: line,
+				Key0:      a.key0,
+				Key1:      a.key1,
+				Data:      line,
+				Timestamp: time.Now().UnixMilli(),
 			},
 		}
 	}
