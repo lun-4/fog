@@ -76,6 +76,8 @@ defmodule Fog.LogServer do
     Process.send_after(self(), :sync_index, 1 * 60 * 1000)
   end
 
+  @devmode false
+
   @impl true
   def handle_call({:store, line, %DateTime{} = timestamp}, {agent_pid, _}, state) do
     {key0, key1} = state.k0k1
@@ -120,7 +122,11 @@ defmodule Fog.LogServer do
     # TODO (optimization): batch to temporary file then fsync+rename
     # <version>\t<timestamp>\t<log itself>
     IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
-    Logger.debug("log line=#{line}, tstamp=#{timestamp}, file=#{log_path}")
+
+    if @devmode do
+      Logger.debug("log line=#{line}, tstamp=#{timestamp}, file=#{log_path}")
+    end
+
     fd_timestamp = System.monotonic_time()
 
     # if index_data didn't have this second of the day, set it

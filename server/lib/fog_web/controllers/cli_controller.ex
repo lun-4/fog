@@ -49,7 +49,7 @@ defmodule FogWeb.CLIController do
   end
 
   defp handle_query(conn, params) do
-    {:ok, logs} = Fog.LogStore.query(params)
+    {:ok, logs} = Fog.LogStore.query(params, verbose_debug: true)
     json(conn, %{logs: logs})
   end
 

@@ -17,10 +17,14 @@ defmodule FogWeb.AgentSocket do
     {:ok, state}
   end
 
+  @devmode false
+
   def handle_in({text, opts}, state) do
-    Logger.debug(
-      "Agent socket handle_in called, text=#{inspect(text)} opts=#{inspect(opts)} state=#{inspect(state)}"
-    )
+    if @devmode do
+      Logger.debug(
+        "Agent socket handle_in called, text=#{inspect(text)} opts=#{inspect(opts)} state=#{inspect(state)}"
+      )
+    end
 
     case Jason.decode(text) do
       {:ok, message} ->
@@ -35,7 +39,9 @@ defmodule FogWeb.AgentSocket do
   defp json(msg), do: {:text, Jason.encode!(msg)}
 
   def handle_info({:log_server_ack, k0, k1}, state) do
-    Logger.debug("ack #{k0} #{k1}")
+    if @devmode do
+      Logger.debug("ack #{k0} #{k1}")
+    end
 
     {:push,
      json(%{
@@ -76,7 +82,7 @@ defmodule FogWeb.AgentSocket do
   end
 
   def terminate(reason, _state) do
-    Logger.debug("Agent socket terminate called: reason=#{inspect(reason)}")
+    Logger.info("Agent socket terminate called: reason=#{inspect(reason)}")
 
     case reason do
       {:error, :closed} -> :noop
