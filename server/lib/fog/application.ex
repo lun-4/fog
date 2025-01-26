@@ -7,7 +7,7 @@ defmodule Fog.Application do
 
   @impl true
   def start(_type, _args) do
-    {:ok, _} = File.mkdir_p(Fog.LogStore.tmp_path())
+    :ok = File.mkdir_p(Fog.LogStore.tmp_path())
 
     children = [
       FogWeb.Telemetry,
