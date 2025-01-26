@@ -52,8 +52,21 @@ defmodule Mix.Tasks.Fog.Index do
         File.regular?(path) ->
           timestamp = Fog.LogStore.datetime_from_path(path)
           Logger.info("checking #{path}...")
-          {:ok, _} = Fog.IndexStore.read(key0, key1, timestamp)
-          Logger.info("ok!")
+          {:ok, data} = Fog.IndexStore.read(key0, key1, timestamp)
+
+          stats =
+            data.seeks
+            |> Enum.reduce(%{hit: 0, nonhit: 0}, fn seek, acc ->
+              if seek == -1 do
+                %{acc | nonhit: acc.nonhit + 1}
+              else
+                %{acc | hit: acc.hit + 1}
+              end
+            end)
+
+          Logger.info(
+            "ok! index has #{stats.hit} seek values, #{stats.nonhit} missing seek values"
+          )
 
         true ->
           Logger.info("ignoring #{inspect(path)}")
