@@ -118,7 +118,7 @@ defmodule Fog.LogServer do
       end
 
     timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
-    current_seek = :file.position(fd, :cur)
+    {:ok, current_seek} = :file.position(fd, :cur)
     # TODO (optimization): batch to temporary file then fsync+rename
     # <version>\t<timestamp>\t<log itself>
     IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
@@ -143,7 +143,7 @@ defmodule Fog.LogServer do
     # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
     # one entire minute with very useful data in-memory...
     index_data =
-      if maybe_seek == nil do
+      if maybe_seek == -1 do
         put_in(index_data.seeks, index_data.seeks |> List.replace_at(second_of_day, current_seek))
       else
         index_data
