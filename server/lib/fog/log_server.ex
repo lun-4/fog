@@ -173,16 +173,22 @@ defmodule Fog.LogServer do
     |> Stream.filter(fn {_, {_, _, _, index_data}} ->
       index_data != nil
     end)
-    |> Enum.map(fn {_, {key0, key1, timestamp, index_data}} ->
+    |> Enum.map(fn {_, {key0, key1, timestamp, index_data}} = kv ->
       Logger.debug("Syncing index for #{key0}/#{key1}/#{timestamp}...")
       Fog.IndexStore.write(key0, key1, timestamp, index_data)
+      kv
     end)
+    # remove index data after 2 days to prevent memleaks
+    |> Enum.filter(fn {_, {_, _, timestamp, _}} ->
+      now = DateTime.utc_now()
+      amount_of_days = DateTime.diff(now, timestamp, :day)
+      amount_of_days < 2
+    end)
+    |> Map.new()
     |> then(fn index_ts_v1 ->
       Logger.info("Synced index for all #{Enum.count(index_ts_v1)} keys")
 
-      # TODO (index): when do we remove index_datas from memory???
-      # maybe after 3 days? so that server doesn't just leak memory every day and uptime can be high lol
-      {:noreply, state}
+      {:noreply, put_in(state.index_ts_v1, index_ts_v1)}
     end)
   end
 
