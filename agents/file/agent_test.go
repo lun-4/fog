@@ -323,7 +323,7 @@ func TestLogRotation(t *testing.T) {
 
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
 	agent := NewAgent(wsURL, "test-token", logFile, "test-host", "test-service")
-	agent.DebugMode = true
+	agent.TraceMode = true
 
 	// Connect and start handlers
 	err = agent.connect()
