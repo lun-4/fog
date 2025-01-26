@@ -335,6 +335,9 @@ func main() {
 	}
 
 	agent := NewAgent(*serverURL, *token, *logFile, *key0, *key1)
+	if os.Getenv("DEBUG") == "1" {
+		agent.DebugMode = true
+	}
 
 	// Initial connection
 	err := agent.connect()
