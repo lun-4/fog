@@ -137,14 +137,14 @@ defmodule Fog.LogStore do
     selectors
     |> Enum.map(fn selector ->
       case selector |> String.split(".") do
+        ["*", "*"] ->
+          true
+
         [wanted_key0, "*"] ->
           wanted_key0 == key0
 
         ["*", wanted_key1] ->
           wanted_key1 == key1
-
-        ["*", "*"] ->
-          true
 
         [wanted_key0, wanted_key1] ->
           wanted_key0 == key0 and wanted_key1 == key1
@@ -238,7 +238,7 @@ defmodule Fog.LogStore do
 
     line_timestamp_unix_str = parsed |> Enum.at(1)
     {line_timestamp_unix, ""} = Integer.parse(line_timestamp_unix_str)
-    logline = parsed |> Enum.slice(2..-1) |> Enum.join("\t")
+    logline = parsed |> Enum.slice(2..length(parsed)) |> Enum.join("\t")
 
     %LogLine{
       key0: key0,
