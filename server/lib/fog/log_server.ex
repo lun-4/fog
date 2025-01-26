@@ -169,9 +169,6 @@ defmodule Fog.LogServer do
 
   @impl true
   def handle_info(:sync_index, state) do
-    # TODO (index): we need to check if the index wasn't changed by another process (shouldn't happen, but can happen in tests)
-    # do this by reading the index then comparing, if it's a different serialization then we must ignore our own data
-    # and then rebuild later on
     state.index_ts_v1
     |> Stream.filter(fn {_, {_, _, _, index_data}} ->
       index_data != nil
