@@ -345,65 +345,80 @@ defmodule Fog.LogStore do
     )
 
     # TODO (optimization): use Stream instead of reading entire file into memory
-    with {:ok, data} <- :file.read(file, amount) do
-      data
-      |> String.split("\n")
-      |> then(fn
-        [] ->
-          Logger.warning("no logs found, since=#{since} until=#{inspect(until)}")
+    stream_positioned_file(file, amount)
+    |> Enum.to_list()
+    |> Stream.map(fn line ->
+      cond do
+        line == "" ->
+          Logger.warning("got an empty line in #{inspect(file_path)}")
+          nil
 
-        v ->
-          Logger.debug("got #{length(v)} lines, since=#{since / 1000} until=#{until / 1000}")
-          v
-      end)
-      |> Enum.map(fn line ->
-        cond do
-          line == "" ->
-            Logger.warning("got an empty line in #{inspect(file_path)}")
-            nil
+        grep != nil and not String.contains?(line, grep) ->
+          nil
 
-          grep != nil and not String.contains?(line, grep) ->
-            nil
+        # storage format v1
+        String.starts_with?(line, "1") ->
+          parse_line_v1(key0, key1, line)
 
-          # storage format v1
-          String.starts_with?(line, "1") ->
-            parse_line_v1(key0, key1, line)
+        true ->
+          Logger.warning("invalid log line: '#{line}'")
+          nil
+      end
+    end)
+    |> Stream.filter(fn
+      nil ->
+        false
 
-          true ->
-            Logger.warning("invalid log line: '#{line}'")
-            nil
+      %LogLine{} = l ->
+        if verbose_debug? do
+          Logger.debug(
+            "line #{l.text}, timestamp #{l.timestamp / 1000}, is above since? #{inspect(l.timestamp >= since)}, is below until? #{inspect(l.timestamp <= until)}"
+          )
         end
-      end)
-      |> Enum.filter(fn
-        nil ->
-          false
 
-        %LogLine{} = l ->
-          if verbose_debug? do
-            Logger.debug(
-              "line #{l.text}, timestamp #{l.timestamp / 1000}, is above since? #{inspect(l.timestamp >= since)}, is below until? #{inspect(l.timestamp <= until)}"
-            )
-          end
+        l.timestamp >= since and l.timestamp < until
+    end)
+    |> Enum.to_list()
+    |> then(fn v ->
+      Logger.debug(
+        "filtered to #{length(v)} loglines from (#{key0}/#{key1}), since=#{inspect(since)}"
+      )
 
-          l.timestamp >= since and l.timestamp < until
-      end)
-    end
-    |> then(fn
-      {:error, _} = v ->
-        v
-
-      v ->
-        Logger.debug(
-          "filtered to #{length(v)} loglines from (#{key0}/#{key1}), since=#{inspect(since)}"
-        )
-
-        {:ok, v}
+      {:ok, v}
     end)
     |> then(fn
       v ->
         :ok = :file.close(file)
         v
     end)
+  end
+
+  def stream_positioned_file(file_handle, amount) do
+    Stream.resource(
+      fn -> {file_handle, amount} end,
+      fn
+        {handle, bytes_left} when bytes_left > 0 ->
+          case IO.read(handle, :line) do
+            :eof ->
+              {:halt, {handle, 0}}
+
+            line ->
+              line_bytes = byte_size(line)
+
+              if line_bytes <= bytes_left do
+                {[String.trim_trailing(line)], {handle, bytes_left - line_bytes}}
+              else
+                # Read partial line up to the byte limit
+                truncated = binary_part(line, 0, bytes_left)
+                {[String.trim_trailing(truncated)], {handle, 0}}
+              end
+          end
+
+        {handle, 0} ->
+          {:halt, {handle, 0}}
+      end,
+      fn {handle, _} -> File.close(handle) end
+    )
   end
 
   def datetime_from_path(path) do
