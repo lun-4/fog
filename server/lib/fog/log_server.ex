@@ -205,6 +205,7 @@ defmodule Fog.LogServer do
       end
     end)
     |> Enum.filter(fn v -> v != nil end)
+    |> Map.new()
     |> then(fn new_fds ->
       schedule_unused_fds()
       {:noreply, put_in(state.fds, new_fds)}
