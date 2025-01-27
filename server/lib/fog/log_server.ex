@@ -137,28 +137,29 @@ defmodule Fog.LogServer do
 
     # if index_data didn't have this second of the day, set it
     # (writing to the index file happens asynchronously)
-    second_of_day = Fog.IndexStore.second_of_day(timestamp)
-
-    maybe_seek =
-      if index_data != nil do
-        index_data.seeks |> Enum.at(second_of_day)
-      else
-        -1
-      end
-
-    # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
-    # one entire minute with very useful data in-memory...
-    index_data =
-      if maybe_seek == -1 do
-        put_in(index_data.seeks, index_data.seeks |> List.replace_at(second_of_day, current_seek))
-      else
-        index_data
-      end
-
-    state = put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))
-
     state =
-      if build_index_ts_v1? do
+      if index_data != nil do
+        second_of_day = Fog.IndexStore.second_of_day(timestamp)
+
+        maybe_seek =
+          if index_data != nil do
+            index_data.seeks |> Enum.at(second_of_day)
+          else
+            -1
+          end
+
+        # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
+        # one entire minute with very useful data in-memory...
+        index_data =
+          if maybe_seek == -1 do
+            put_in(
+              index_data.seeks,
+              index_data.seeks |> List.replace_at(second_of_day, current_seek)
+            )
+          else
+            index_data
+          end
+
         put_in(
           state.index_ts_v1,
           Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
@@ -166,6 +167,8 @@ defmodule Fog.LogServer do
       else
         state
       end
+
+    state = put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))
 
     state =
       put_in(
