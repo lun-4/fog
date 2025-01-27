@@ -152,6 +152,10 @@ defmodule Fog.LogServer do
         # one entire minute with very useful data in-memory...
         index_data =
           if maybe_seek == -1 do
+            Logger.debug(
+              "#{state.key0}/#{state.key1} log server: setting index_ts_v1 seek at #{inspect(second_of_day)} = #{current_seek}"
+            )
+
             put_in(
               index_data.seeks,
               index_data.seeks |> List.replace_at(second_of_day, current_seek)
