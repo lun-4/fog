@@ -153,7 +153,7 @@ defmodule Fog.LogServer do
         index_data =
           if maybe_seek == -1 do
             Logger.debug(
-              "#{state.key0}/#{state.key1} log server: setting index_ts_v1 seek at #{inspect(second_of_day)} = #{current_seek}"
+              "#{key0}/#{key1} log server: setting index_ts_v1 seek at #{inspect(second_of_day)} = #{current_seek}"
             )
 
             put_in(
