@@ -119,6 +119,7 @@ defmodule Fog.LogServer do
         nil ->
           with {:ok, fd} <- File.open(log_path, [:append]) do
             {:ok, _} = :file.position(fd, :eof)
+            {:ok, fd}
           end
       end
 
