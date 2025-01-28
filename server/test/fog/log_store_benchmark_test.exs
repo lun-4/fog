@@ -377,11 +377,9 @@ defmodule Fog.LogStoreBenchmarkTest do
         cool_timestamp
       )
 
-    server_state = :sys.get_state(server)
-    assert Enum.count(server_state.index_ts_v1) > 0
-
-    {_path, {_k0, _k1, _ts, index_data}} = Enum.at(server_state.index_ts_v1, 0)
-    assert length(index_data.seeks) > 0
+    server_state_after = :sys.get_state(server)
+    assert Enum.count(server_state_after.index_ts_v1) > 0
+    {_path, {_k0, _k1, _ts, index_data}} = Enum.at(server_state_after.index_ts_v1, 0)
 
     missing_seek_count_after =
       index_data.seeks
@@ -389,5 +387,19 @@ defmodule Fog.LogStoreBenchmarkTest do
       |> Enum.count()
 
     assert missing_seek_count_after == missing_seek_count_before - 1
+
+    # force a checkpoint of the index
+    send(server, :sync_index)
+
+    Process.sleep(500)
+
+    {:ok, seek_index} =
+      Fog.IndexStore.read_at(
+        key0_large,
+        key1_large,
+        cool_timestamp |> DateTime.from_unix!(:millisecond)
+      )
+
+    assert seek_index != -1
   end
 end
