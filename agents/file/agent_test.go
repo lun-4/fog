@@ -360,6 +360,9 @@ func TestLogRotation(t *testing.T) {
 	err = os.Rename(logFile, rotatedName)
 	require.NoError(t, err)
 
+	// let agent wait for a while before creating the new log file
+	time.Sleep(100 * time.Millisecond)
+
 	// Create new log file
 	rotatedFd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	require.NoError(t, err)

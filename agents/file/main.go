@@ -233,6 +233,23 @@ type watchState struct {
 }
 
 func (a *Agent) setupWatchFile(readFromBeginning bool) (*watchState, error) {
+	retries := 0
+	for {
+		if retries > 30 {
+			return nil, fmt.Errorf("failed to setup watch after %d retries", retries)
+		}
+		state, err := a.setupWatchFileInner(readFromBeginning)
+		if err != nil {
+			log.Printf("failed to setup watch, retrying in 30ms: %v", err)
+			retries += 1
+			time.Sleep(30 * time.Millisecond)
+			continue
+		} else {
+			return state, nil
+		}
+	}
+}
+func (a *Agent) setupWatchFileInner(readFromBeginning bool) (*watchState, error) {
 	log.Println("setup file watch on", a.logFile)
 	a.Debug("setting up watchFile on %v", a.logFile)
 	watcher, err := fsnotify.NewWatcher()
