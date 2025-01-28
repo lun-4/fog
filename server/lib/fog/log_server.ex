@@ -206,6 +206,7 @@ defmodule Fog.LogServer do
     |> Map.new()
     |> then(fn index_ts_v1 ->
       Logger.info("Synced index for all #{Enum.count(index_ts_v1)} keys")
+      schedule_index_syncing()
 
       {:noreply, put_in(state.index_ts_v1, index_ts_v1)}
     end)
