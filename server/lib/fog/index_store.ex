@@ -100,11 +100,16 @@ defmodule Fog.IndexStore do
 
     Logger.debug("writing to #{temp_path}, renaming to #{path}")
 
-    with :ok <- File.write(temp_path, data |> serialize!),
-         :ok <- File.rename(temp_path, path) do
+    with {:write, :ok} <- {:write, File.write(temp_path, data |> serialize!)},
+         {:rename, :ok} <- {:rename, File.rename(temp_path, path)} do
       :ok
     else
-      v -> v
+      v ->
+        Logger.warning(
+          "Could not write to #{key0}/#{key1} for #{inspect(timestamp)}: #{inspect(v)}"
+        )
+
+        {:error, v}
     end
   end
 
@@ -159,7 +164,7 @@ defmodule Fog.IndexStore do
 
   @spec read_at(String.t(), String.t(), DateTime.t(), Keyword.t()) ::
           {:ok, integer()} | {:error, term()}
-  def read_at(key0, key1, timestamp, opts \\ []) do
+  def read_at(key0, key1, %DateTime{} = timestamp, opts \\ []) do
     path = path_for(key0, key1, timestamp)
     second = second_of_day(timestamp)
 
@@ -191,7 +196,7 @@ defmodule Fog.IndexStore do
           # that is either before or after `second` (if accept_before?/accept_after?)
 
           Logger.debug(
-            "read_at falling back to entire-index-read due to missing seek value on #{second} for #{key0}/#{key1}/#{timestamp}"
+            "read_at falling back to entire-index-read due to missing seek value on #{second} for #{key0}/#{key1}/#{inspect(timestamp)}"
           )
 
           case read(key0, key1, timestamp) do
@@ -204,7 +209,7 @@ defmodule Fog.IndexStore do
                 %{
                   index: nil
                 },
-                fn {seek_index, _}, acc ->
+                fn {value, seek_index}, acc ->
                   acc_index =
                     cond do
                       acc.index != nil -> acc.index
@@ -215,10 +220,10 @@ defmodule Fog.IndexStore do
                   {valid_index?, better_index?} =
                     cond do
                       accept_before? ->
-                        {seek_index < second, seek_index > acc_index}
+                        {seek_index < second and value != -1, seek_index > acc_index}
 
                       accept_after? ->
-                        {seek_index < second, seek_index < acc_index}
+                        {seek_index > second and value != -1, seek_index < acc_index}
 
                       true ->
                         raise "invalid state"

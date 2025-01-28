@@ -15,6 +15,9 @@ defmodule Fog.IndexV1Test do
     key0 = "test_host#{random_string()}"
     key1 = "test_service#{random_string()}"
 
+    Fog.LogStore.tmp_path()
+    |> File.mkdir_p!()
+
     {:ok,
      %{
        key0: key0,
@@ -58,5 +61,62 @@ defmodule Fog.IndexV1Test do
 
     {:ok, seek_from_constant} = Fog.IndexStore.read_at(key0, key1, query)
     assert seek_from_constant == wanted_seek
+  end
+
+  test "missing seek values still work on read_at", %{key0: key0, key1: key1} do
+    datetime = DateTime.utc_now()
+    midnight = %{datetime | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
+
+    base_index = 1000
+
+    seeks =
+      1..86400
+      |> Enum.map(fn seconds ->
+        rand_offset = :rand.uniform(10000)
+        {midnight |> DateTime.add(seconds, :second), rand_offset}
+      end)
+      |> Enum.into(%{})
+      # set a range of indexes to -1
+      |> then(fn seeks ->
+        1..100
+        |> Enum.reduce(seeks, fn idx, seeks ->
+          Map.put(seeks, midnight |> DateTime.add(base_index + idx, :second), -1)
+        end)
+      end)
+
+    assert Enum.count(seeks) == 86400
+
+    :ok =
+      Fog.IndexStore.write(key0, key1, datetime, seeks |> Fog.IndexStore.Data.from_offset_map!())
+
+    ts = midnight |> DateTime.add(2, :second)
+    original_seek = seeks |> Map.get(ts)
+    {:ok, fetched_seek} = Fog.IndexStore.read_at(key0, key1, ts)
+    assert fetched_seek == original_seek
+
+    # now seek at one of the missing indexes, should be -1
+    ts = midnight |> DateTime.add(base_index + 10, :second)
+    original_seek = seeks |> Map.get(ts)
+    {:ok, fetched_seek} = Fog.IndexStore.read_at(key0, key1, ts)
+    assert fetched_seek == original_seek
+    assert fetched_seek == -1
+
+    # backtracking should work
+    ts = midnight |> DateTime.add(base_index + 10, :second)
+    wanted_ts = midnight |> DateTime.add(base_index, :second)
+    original_seek = seeks |> Map.get(wanted_ts)
+    assert original_seek != nil
+    {:ok, fetched_seek} = Fog.IndexStore.read_at(key0, key1, ts, accept_before?: true)
+    assert fetched_seek == original_seek
+    assert fetched_seek != -1
+
+    # fast-forwarding should work
+    ts = midnight |> DateTime.add(base_index + 50, :second)
+    wanted_ts = midnight |> DateTime.add(base_index + 101, :second)
+    original_seek = seeks |> Map.get(wanted_ts)
+    assert original_seek != nil
+    {:ok, fetched_seek} = Fog.IndexStore.read_at(key0, key1, ts, accept_after?: true)
+    assert fetched_seek == original_seek
+    assert fetched_seek != -1
   end
 end
