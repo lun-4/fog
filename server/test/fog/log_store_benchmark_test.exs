@@ -348,9 +348,46 @@ defmodule Fog.LogStoreBenchmarkTest do
     {_path, {_k0, _k1, _ts, index_data}} = Enum.at(server_state.index_ts_v1, 0)
     assert length(index_data.seeks) > 0
 
-    assert index_data.seeks
-           # first 100 seconds should be good (aka no -1)
-           |> Enum.slice(0..100)
-           |> Enum.all?(fn x -> x != -1 end)
+    missing_seek_count_before =
+      index_data.seeks
+      |> Enum.filter(fn x -> x == -1 end)
+      |> Enum.count()
+
+    hit_seek_count =
+      index_data.seeks
+      |> Enum.filter(fn x -> x != -1 end)
+      |> Enum.count()
+
+    assert hit_seek_count > 100
+
+    # submitting another log on a timestamp in the future should make the log server
+    # emit another seek hit
+    cool_timestamp =
+      logs
+      |> Enum.at(-1)
+      |> then(fn log ->
+        log.timestamp + 1000
+      end)
+
+    :ok =
+      Fog.LogStore.store(
+        key0_large,
+        key1_large,
+        "hit seek",
+        cool_timestamp
+      )
+
+    server_state = :sys.get_state(server)
+    assert Enum.count(server_state.index_ts_v1) > 0
+
+    {_path, {_k0, _k1, _ts, index_data}} = Enum.at(server_state.index_ts_v1, 0)
+    assert length(index_data.seeks) > 0
+
+    missing_seek_count_after =
+      index_data.seeks
+      |> Enum.filter(fn x -> x == -1 end)
+      |> Enum.count()
+
+    assert missing_seek_count_after == missing_seek_count_before - 1
   end
 end
