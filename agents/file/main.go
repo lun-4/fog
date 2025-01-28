@@ -29,34 +29,36 @@ type LogData struct {
 }
 
 type Agent struct {
-	serverURL            string
-	token                string
-	logFile              string
-	key0                 string
-	key1                 string
-	conn                 *websocket.Conn
-	sendChan             chan Message
-	done                 chan struct{}
-	reconnectMux         sync.Mutex
-	isConnected          bool
-	heartbeatPeriod      time.Duration
-	DebugMode            bool
-	TraceMode            bool
-	FileSetupRetryPeriod time.Duration
+	serverURL             string
+	token                 string
+	logFile               string
+	key0                  string
+	key1                  string
+	conn                  *websocket.Conn
+	sendChan              chan Message
+	done                  chan struct{}
+	reconnectMux          sync.Mutex
+	isConnected           bool
+	heartbeatPeriod       time.Duration
+	DebugMode             bool
+	TraceMode             bool
+	FileSetupRetryPeriod  time.Duration
+	ConnectionRetryPeriod time.Duration
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 	return &Agent{
-		serverURL:            serverURL,
-		token:                token,
-		logFile:              logFile,
-		key0:                 key0,
-		key1:                 key1,
-		sendChan:             make(chan Message, 100),
-		done:                 make(chan struct{}),
-		heartbeatPeriod:      5 * time.Second,
-		DebugMode:            false,
-		FileSetupRetryPeriod: 1 * time.Second,
+		serverURL:             serverURL,
+		token:                 token,
+		logFile:               logFile,
+		key0:                  key0,
+		key1:                  key1,
+		sendChan:              make(chan Message, 100),
+		done:                  make(chan struct{}),
+		heartbeatPeriod:       5 * time.Second,
+		DebugMode:             false,
+		FileSetupRetryPeriod:  1 * time.Second,
+		ConnectionRetryPeriod: 2 * time.Second,
 	}
 }
 
@@ -71,7 +73,6 @@ func (a *Agent) Trace(fmt string, args ...any) {
 	}
 }
 
-// TODO support log rotation on the file agent is watching
 func (a *Agent) connect() error {
 	a.reconnectMux.Lock()
 	defer a.reconnectMux.Unlock()
@@ -131,8 +132,8 @@ func (a *Agent) reconnect() {
 			log.Println("Successfully reconnected")
 			return
 		}
-		log.Printf("Reconnect failed: %v, retrying in 5 seconds...", err)
-		time.Sleep(5 * time.Second)
+		log.Printf("Reconnect failed: %v, retrying in %v...", err, a.ConnectionRetryPeriod)
+		time.Sleep(a.ConnectionRetryPeriod)
 	}
 }
 
@@ -415,13 +416,11 @@ func main() {
 		agent.DebugMode = true
 	}
 
-	// Initial connection
-	err := agent.connect()
-	if err != nil {
-		log.Fatal("Initial connection failed:", err)
-	}
+	go func() {
+		agent.reconnect()
+	}()
 
-	err = agent.Setup()
+	err := agent.Setup()
 	if err != nil {
 		log.Panicf("agent setup error: %v", err)
 	}
