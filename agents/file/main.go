@@ -29,32 +29,34 @@ type LogData struct {
 }
 
 type Agent struct {
-	serverURL       string
-	token           string
-	logFile         string
-	key0            string
-	key1            string
-	conn            *websocket.Conn
-	sendChan        chan Message
-	done            chan struct{}
-	reconnectMux    sync.Mutex
-	isConnected     bool
-	heartbeatPeriod time.Duration
-	DebugMode       bool
-	TraceMode       bool
+	serverURL            string
+	token                string
+	logFile              string
+	key0                 string
+	key1                 string
+	conn                 *websocket.Conn
+	sendChan             chan Message
+	done                 chan struct{}
+	reconnectMux         sync.Mutex
+	isConnected          bool
+	heartbeatPeriod      time.Duration
+	DebugMode            bool
+	TraceMode            bool
+	FileSetupRetryPeriod time.Duration
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 	return &Agent{
-		serverURL:       serverURL,
-		token:           token,
-		logFile:         logFile,
-		key0:            key0,
-		key1:            key1,
-		sendChan:        make(chan Message, 100),
-		done:            make(chan struct{}),
-		heartbeatPeriod: 5 * time.Second,
-		DebugMode:       false,
+		serverURL:            serverURL,
+		token:                token,
+		logFile:              logFile,
+		key0:                 key0,
+		key1:                 key1,
+		sendChan:             make(chan Message, 100),
+		done:                 make(chan struct{}),
+		heartbeatPeriod:      5 * time.Second,
+		DebugMode:            false,
+		FileSetupRetryPeriod: 1 * time.Second,
 	}
 }
 
@@ -240,9 +242,9 @@ func (a *Agent) setupWatchFile(readFromBeginning bool) (*watchState, error) {
 		}
 		state, err := a.setupWatchFileInner(readFromBeginning)
 		if err != nil {
-			log.Printf("failed to setup watch, retrying in 30ms: %v", err)
+			log.Printf("failed to setup watch, retrying in %v: %v", a.FileSetupRetryPeriod, err)
 			retries += 1
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(a.FileSetupRetryPeriod)
 			continue
 		} else {
 			return state, nil
