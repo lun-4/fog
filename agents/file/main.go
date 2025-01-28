@@ -39,7 +39,6 @@ type Agent struct {
 	done            chan struct{}
 	reconnectMux    sync.Mutex
 	isConnected     bool
-	setupFileWatch  chan error
 	heartbeatPeriod time.Duration
 	DebugMode       bool
 	TraceMode       bool
@@ -54,7 +53,6 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 		key1:            key1,
 		sendChan:        make(chan Message, 100),
 		done:            make(chan struct{}),
-		setupFileWatch:  make(chan error, 1),
 		heartbeatPeriod: 5 * time.Second,
 		DebugMode:       false,
 	}
@@ -62,12 +60,12 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 
 func (a *Agent) Debug(fmt string, args ...any) {
 	if a.DebugMode {
-		log.Printf(fmt, args...)
+		log.Printf("[DEBUG] "+fmt, args...)
 	}
 }
 func (a *Agent) Trace(fmt string, args ...any) {
 	if a.TraceMode {
-		log.Printf(fmt, args...)
+		log.Printf("[TRACE] "+fmt, args...)
 	}
 }
 
@@ -179,16 +177,14 @@ func (a *Agent) handleWebSocket() {
 func (a *Agent) Setup() error {
 	go a.handleWebSocket()
 	go a.handleServerMessages()
-	go func() {
-		err := a.watchFile(false)
-		a.setupFileWatch <- err
-	}()
-	select {
-	case err := <-a.setupFileWatch:
+	state, err := a.setupWatchFile(false)
+	if err != nil {
 		return err
-	case <-time.After(5 * time.Second):
-		panic("Agent setup possibly failed")
 	}
+	go func() {
+		a.watchFileLoop(*state)
+	}()
+	return nil
 }
 
 func (a *Agent) handleServerMessages() {
@@ -230,56 +226,90 @@ func (a *Agent) handleServerMessages() {
 	}
 }
 
-func (a *Agent) watchFile(readFromBeginning bool) error {
+type watchState struct {
+	watcher *fsnotify.Watcher
+	reader  *bufio.Reader
+	file    *os.File
+}
+
+func (a *Agent) setupWatchFile(readFromBeginning bool) (*watchState, error) {
+	log.Println("setup file watch on", a.logFile)
 	a.Debug("setting up watchFile on %v", a.logFile)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return fmt.Errorf("new watcher error: %v", err)
+		return nil, fmt.Errorf("new watcher error: %v", err)
 	}
-	defer watcher.Close()
 
+	a.Debug("adding logfile %s to watcher", a.logFile)
 	err = watcher.Add(a.logFile)
 	if err != nil {
-		return fmt.Errorf("add watcher error: %v", err)
+		return nil, fmt.Errorf("add watcher error: %v", err)
 	}
 
 	// Open file for initial reading
+	a.Debug("opening logfile %s", a.logFile)
 	file, err := os.Open(a.logFile)
 	if err != nil {
-		return fmt.Errorf("open file error: %v", err)
+		return nil, fmt.Errorf("open file error: %v", err)
 	}
-	defer file.Close()
 
 	// Seek to end of file
+	a.Debug("seeking, readFromBeginning=%v", readFromBeginning)
 	if readFromBeginning {
 		_, err = file.Seek(0, 0)
 		if err != nil {
-			return fmt.Errorf("seek error: %v", err)
+			return nil, fmt.Errorf("seek error: %v", err)
 		}
 	} else {
 		_, err = file.Seek(0, 2)
 		if err != nil {
-			return fmt.Errorf("seek error: %v", err)
+			return nil, fmt.Errorf("seek error: %v", err)
 		}
 	}
 
 	// Create a buffered reader for line-by-line reading
 	reader := bufio.NewReader(file)
 
-	log.Println("setup file watch on", a.logFile)
-	a.setupFileWatch <- nil
+	log.Println("setup complete", a.logFile)
 
 	if readFromBeginning {
 		a.Debug("readFromBeginning is set! reading everything from %v", a.logFile)
 		a.readAndSend(reader)
 	}
 
+	return &watchState{watcher, reader, file}, err
+}
+
+func (a *Agent) watchFileLoop(state watchState) {
+	errChannel := make(chan error, 1)
+	for {
+		a.watchFileInnerLoop(state.watcher, state.reader, state.file, errChannel)
+		err := <-errChannel
+		if err != nil {
+			// TODO auto restart, file position resuming, etc
+			log.Panicf("watchFileLoop error, should restart: %v", err)
+		}
+	}
+}
+
+func (a *Agent) watchFileInnerLoop(watcher *fsnotify.Watcher,
+	reader *bufio.Reader,
+	file *os.File,
+	workerChannel chan error,
+) {
+	defer watcher.Close()
+	defer file.Close()
 	for {
 		select {
 		case <-a.done:
-			return nil
+			workerChannel <- nil
+			return
 
-		case event := <-watcher.Events:
+		case event, ok := <-watcher.Events:
+			if !ok {
+				workerChannel <- nil
+				return
+			}
 			a.Trace("got event from fsnotify: %v", event)
 			if event.Has(fsnotify.Write) {
 				a.readAndSend(reader)
@@ -288,19 +318,30 @@ func (a *Agent) watchFile(readFromBeginning bool) error {
 				// finish reading from current file
 				a.readAndSend(reader)
 				// spawn another goroutine so it sets itself up on path
-				go func() {
-					err := a.watchFile(true)
+				func() {
+					newState, err := a.setupWatchFile(true)
 					if err != nil {
 						log.Panicf("File watch error: %v", err)
 					}
+					go func() {
+						a.watchFileLoop(*newState)
+					}()
 				}()
 				// stop ourselves
-				return nil
+				workerChannel <- nil
+				return
 			}
-		case err := <-watcher.Errors:
-			log.Printf("Watcher error: %v", err)
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Printf("Watcher error: %v %v", err, ok)
+			workerChannel <- err
+			return
 		}
 	}
+
 }
 
 func (a *Agent) readAndSend(reader *bufio.Reader) {
