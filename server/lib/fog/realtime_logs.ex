@@ -122,13 +122,19 @@ defmodule Fog.LogStore.Realtime do
 
   @impl true
   def handle_info(:schedule_log, state) do
-    Enum.each(state.log_counters, fn {k0k1, count} ->
-      {k0, k1} = k0k1
-      Logger.info("#{k0}/#{k1}: received #{count} logs")
-    end)
+    new_counters =
+      Enum.map(
+        state.log_counters,
+        fn {k0k1, count} ->
+          {k0, k1} = k0k1
+          Logger.info("#{k0}/#{k1}: received #{count} logs")
+          {k0k1, 0}
+        end
+      )
+      |> Map.new()
 
     schedule_log()
-    {:noreply, state |> Map.put(:log_count, %{})}
+    {:noreply, state |> Map.put(:log_counters, new_counters)}
   end
 
   @impl true
