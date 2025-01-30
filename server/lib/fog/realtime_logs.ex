@@ -29,13 +29,20 @@ defmodule Fog.LogStore.Realtime do
 
   @impl true
   def init(_opts) do
+    schedule_log()
+
     {:ok,
      %{
+       log_counters: %{},
        # Map of filter hash -> %{filter: filter_params, clients: [{client_id, pid}, ...]}
        filters: %{},
        # Map of client_id -> {filter_hash, pid} for quick lookups during unsubscribe
        clients: %{}
      }}
+  end
+
+  defp schedule_log() do
+    Process.send_after(self(), :schedule_log, 1000)
   end
 
   @impl true
@@ -104,7 +111,24 @@ defmodule Fog.LogStore.Realtime do
       end
     end)
 
-    {:noreply, state}
+    {:noreply,
+     put_in(
+       state.log_counters,
+       Map.update(state.log_counters, {log_entry.key0, log_entry.key1}, 0, fn v ->
+         v + 1
+       end)
+     )}
+  end
+
+  @impl true
+  def handle_info(:schedule_log, state) do
+    Enum.each(state.log_counters, fn {k0k1, count} ->
+      {k0, k1} = k0k1
+      Logger.info("#{k0}/#{k1}: received #{count} logs")
+    end)
+
+    schedule_log()
+    {:noreply, state |> Map.put(:log_count, %{})}
   end
 
   @impl true
