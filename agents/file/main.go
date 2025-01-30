@@ -44,6 +44,7 @@ type Agent struct {
 	TraceMode             bool
 	FileSetupRetryPeriod  time.Duration
 	ConnectionRetryPeriod time.Duration
+	msgCounter            LockedInt
 }
 
 func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
@@ -59,6 +60,7 @@ func NewAgent(serverURL, token, logFile, key0, key1 string) *Agent {
 		DebugMode:             false,
 		FileSetupRetryPeriod:  1 * time.Second,
 		ConnectionRetryPeriod: 2 * time.Second,
+		msgCounter:            LockedInt{},
 	}
 }
 
@@ -177,9 +179,25 @@ func (a *Agent) handleWebSocket() {
 	}
 }
 
+func (a *Agent) printStats() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			log.Printf("%d messages sent to websocket", a.msgCounter.Reset())
+			if len(a.sendChan) > 0 {
+				log.Printf("%d messages in queue", len(a.sendChan))
+			}
+		}
+	}
+}
+
 func (a *Agent) Setup() error {
 	go a.handleWebSocket()
 	go a.handleServerMessages()
+	go a.printStats()
 	state, err := a.setupWatchFile(false)
 	if err != nil {
 		return err
@@ -364,6 +382,41 @@ func (a *Agent) watchFileInnerLoop(watcher *fsnotify.Watcher,
 
 }
 
+type LockedInt struct {
+	mut sync.Mutex
+	ui  uint
+}
+
+func (li *LockedInt) Incr() {
+	li.Lock()
+	defer li.Unlock()
+	li.ui++
+}
+
+func (li *LockedInt) Lock() {
+	li.mut.Lock()
+}
+func (li *LockedInt) Unlock() {
+	li.mut.Unlock()
+}
+func (li *LockedInt) UnlockedGet() uint {
+	return li.ui
+}
+
+func (li *LockedInt) LockAndGet() uint {
+	li.Lock()
+	defer li.Unlock()
+	return li.ui
+}
+
+func (li *LockedInt) Reset() uint {
+	li.Lock()
+	defer li.Unlock()
+	val := li.ui
+	li.ui = 0
+	return val
+}
+
 func (a *Agent) readAndSend(reader *bufio.Reader) {
 	for {
 		// Read until next newline
@@ -380,6 +433,7 @@ func (a *Agent) readAndSend(reader *bufio.Reader) {
 		line = strings.TrimRight(line, "\r\n")
 
 		// Send the complete line
+		a.msgCounter.Incr()
 		a.sendChan <- Message{
 			Op: "send",
 			Data: LogData{
