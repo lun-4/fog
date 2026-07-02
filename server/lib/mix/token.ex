@@ -29,4 +29,13 @@ defmodule Mix.Tasks.Fog.Token do
     IO.puts("token:")
     IO.puts(t.token)
   end
+
+  def run(["list"]) do
+    start_repo()
+
+    Fog.Authentication.all_active()
+    |> Enum.each(fn t ->
+      IO.puts("#{t.id} #{t.description} #{String.slice(t.token, 0, 10)}...")
+    end)
+  end
 end

@@ -114,6 +114,23 @@ func (ts *TestServer) handleClient(t *testing.T, conn *websocket.Conn) {
 				ts.ReceivedLogs = append(ts.ReceivedLogs, logData)
 				ts.LogsLock.Unlock()
 			}
+		case "send_batch":
+			if data, ok := msg.Data.(map[string]interface{}); ok {
+				key0 := data["key0"].(string)
+				key1 := data["key1"].(string)
+				lines, _ := data["lines"].([]interface{})
+
+				ts.LogsLock.Lock()
+				for _, l := range lines {
+					lineMap := l.(map[string]interface{})
+					ts.ReceivedLogs = append(ts.ReceivedLogs, LogData{
+						Key0: key0,
+						Key1: key1,
+						Data: lineMap["data"].(string),
+					})
+				}
+				ts.LogsLock.Unlock()
+			}
 		case "heartbeat":
 			err := conn.WriteJSON(Message{Op: "heartbeat_ack"})
 			if err != nil {
@@ -180,6 +197,16 @@ func TestAgentConnection(t *testing.T) {
 
 	assert.True(t, agent.isConnected)
 	assert.Equal(t, 1, ts.GetClientCount())
+}
+
+func firstBatchLineData(t *testing.T, msg Message) string {
+	data, ok := msg.Data.(map[string]interface{})
+	require.True(t, ok, "expected batch data map")
+	lines, ok := data["lines"].([]interface{})
+	require.True(t, ok, "expected lines array")
+	require.NotEmpty(t, lines, "expected at least one line in batch")
+	lineMap := lines[0].(map[string]interface{})
+	return lineMap["data"].(string)
 }
 
 func (ts *TestServer) FetchOneMessage(t *testing.T, maybeTimeout *time.Duration) Message {
@@ -258,9 +285,8 @@ func TestLogSending(t *testing.T) {
 
 	// Wait for the send message
 	msg := ts.FetchOneMessage(t, nil)
-	require.Equal(t, "send", msg.Op)
-	data := msg.Data.(map[string]interface{})
-	require.Equal(t, testLog, data["data"])
+	require.Equal(t, "send_batch", msg.Op)
+	require.Equal(t, testLog, firstBatchLineData(t, msg))
 
 	// Verify log was received
 	logs := ts.GetReceivedLogs()
@@ -339,9 +365,8 @@ func TestLogRotation(t *testing.T) {
 
 	// Wait for initial log entry to be sent
 	msg := ts.FetchOneMessage(t, nil)
-	require.Equal(t, "send", msg.Op)
-	data := msg.Data.(map[string]interface{})
-	require.Equal(t, "initial log entry", data["data"])
+	require.Equal(t, "send_batch", msg.Op)
+	require.Equal(t, "initial log entry", firstBatchLineData(t, msg))
 
 	// Write some content to be caught in rotation
 	_, err = fd.Write([]byte("last entry before rotation\n"))
@@ -349,9 +374,8 @@ func TestLogRotation(t *testing.T) {
 
 	// Wait for the last entry to be sent
 	msg = ts.FetchOneMessage(t, nil)
-	require.Equal(t, "send", msg.Op)
-	data = msg.Data.(map[string]interface{})
-	require.Equal(t, "last entry before rotation", data["data"])
+	require.Equal(t, "send_batch", msg.Op)
+	require.Equal(t, "last entry before rotation", firstBatchLineData(t, msg))
 
 	// Perform log rotation
 	now := time.Now()
@@ -373,9 +397,8 @@ func TestLogRotation(t *testing.T) {
 
 	// Wait for the first entry in new file to be sent
 	msg = ts.FetchOneMessage(t, nil)
-	require.Equal(t, "send", msg.Op)
-	data = msg.Data.(map[string]interface{})
-	require.Equal(t, "first entry after rotation", data["data"])
+	require.Equal(t, "send_batch", msg.Op)
+	require.Equal(t, "first entry after rotation", firstBatchLineData(t, msg))
 
 	// Verify all logs were received in order
 	logs := ts.GetReceivedLogs()

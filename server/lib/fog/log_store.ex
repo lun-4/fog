@@ -56,12 +56,61 @@ defmodule Fog.LogStore do
     {:ok, server} = Fog.LogServer.get_or_start_server(key0, key1)
     :ok = Fog.LogServer.store(server, line, now)
 
-    Fog.LogStore.Realtime.process_log(%LogLine{
-      key0: key0,
-      key1: key1,
-      timestamp: now,
-      text: line
-    })
+    Fog.LogStore.Realtime.count_ingest(key0, key1, 1)
+    maybe_fan_out(%LogLine{key0: key0, key1: key1, timestamp: now, text: line})
+    :ok
+  end
+
+  @doc """
+  Store a batch of log lines for one `{key0, key1}` in a single writer round-trip.
+
+  `lines` is a list of maps `%{"data" => text, "timestamp" => unix_ms}` (as decoded
+  from the agent's `send_batch` frame); a missing/nil timestamp falls back to now.
+  """
+  def store_batch(key0, key1, lines) when is_list(lines) do
+    now = DateTime.utc_now()
+
+    entries =
+      Enum.map(lines, fn entry ->
+        text = Map.fetch!(entry, "data")
+
+        ts =
+          case Map.get(entry, "timestamp") do
+            nil -> now
+            ms -> DateTime.from_unix!(ms, :millisecond)
+          end
+
+        {text, ts}
+      end)
+
+    {:ok, server} = Fog.LogServer.get_or_start_server(key0, key1)
+    :ok = Fog.LogServer.store_batch(server, entries)
+
+    Fog.LogStore.Realtime.count_ingest(key0, key1, length(entries))
+
+    # only pay the realtime fan-out when someone is actually following
+    if Fog.LogStore.Realtime.any_subscribers?() do
+      Enum.each(entries, fn {text, ts} ->
+        Fog.LogStore.Realtime.process_log(%LogLine{
+          key0: key0,
+          key1: key1,
+          timestamp: ts,
+          text: text
+        })
+      end)
+    end
+
+    :ok
+  end
+
+  # skip the single global Realtime GenServer entirely when there are no followers,
+  # so steady-state ingestion doesn't serialize through its mailbox.
+  defp maybe_fan_out(%LogLine{} = log_line) do
+    if Fog.LogStore.Realtime.any_subscribers?() do
+      Fog.LogStore.Realtime.process_log(log_line)
+    end
+
+    :ok
   end
 
   def parse_datetime(nil), do: {:ok, nil}
@@ -160,36 +209,63 @@ defmodule Fog.LogStore do
     |> Enum.any?()
   end
 
+  # resolve selectors directly to the {key0, key1} pairs they match, only listing
+  # directories when a wildcard actually requires it. a fully-qualified k0.k1 becomes
+  # a single existence check rather than a full walk of the whole data directory.
+  def resolve_selectors(selectors) do
+    selectors
+    |> Enum.flat_map(&resolve_selector/1)
+    |> Enum.uniq()
+  end
+
+  defp resolve_selector(selector) do
+    case String.split(selector, ".") do
+      ["*", "*"] ->
+        all_keys()
+
+      [wanted_key0, "*"] ->
+        key1_for!(wanted_key0)
+        |> Enum.map(fn key1 -> {wanted_key0, key1} end)
+
+      ["*", wanted_key1] ->
+        all_key0!()
+        |> Enum.filter(fn key0 ->
+          Path.join([data_path(), key0, wanted_key1]) |> File.dir?()
+        end)
+        |> Enum.map(fn key0 -> {key0, wanted_key1} end)
+
+      [wanted_key0, wanted_key1] ->
+        if Path.join([data_path(), wanted_key0, wanted_key1]) |> File.dir?() do
+          [{wanted_key0, wanted_key1}]
+        else
+          []
+        end
+
+      _ ->
+        raise "selector has invalid format: #{inspect(selector)}"
+    end
+  end
+
+  # returns {files_by_key, since, until} where files_by_key is a list of
+  # {k0k1, [{date_dt, file_path}, ...]}, each inner list ordered ascending by date.
   defp get_files_for(params) do
-    all = all_keys()
-
-    wanted_keys =
-      all
-      |> Enum.filter(fn k0k1 ->
-        matches_selectors?(k0k1, params["selectors"])
-      end)
-
+    wanted_keys = resolve_selectors(params["selectors"])
     Logger.debug("wanted keys: #{inspect(wanted_keys)}")
-    # for each key, find the initial file based on the since parameter
+
     since_default = DateTime.utc_now() |> DateTime.add(-30, :second)
     {:ok, since} = (params["since"] || DateTime.to_iso8601(since_default)) |> parse_datetime
 
-    # for each key, find the last file based on until
     until_default = DateTime.utc_now() |> DateTime.add(1, :second)
     {:ok, until} = (params["until"] || DateTime.to_iso8601(until_default)) |> parse_datetime
 
-    files =
+    files_by_key =
       wanted_keys
       |> Enum.map(fn {key0, key1} = k0k1 ->
-        files_for(key0, key1, since, until)
-        |> Enum.map(fn read_path ->
-          {since, until, k0k1, read_path}
-        end)
+        {k0k1, files_for(key0, key1, since, until)}
       end)
-      |> List.flatten()
-      |> Enum.sort_by(fn {_, _, _, {%DateTime{} = dt, _}} -> dt end, :asc)
+      |> Enum.reject(fn {_k0k1, files} -> files == [] end)
 
-    {files, since, until}
+    {files_by_key, since, until}
   end
 
   def query(params, opts \\ []) do
@@ -198,29 +274,26 @@ defmodule Fog.LogStore do
     limit = params["limit"] || raise "missing limit. this is a bug"
     {limit, ""} = Integer.parse(limit)
 
-    {initial_files, since, until} = get_files_for(params)
+    {files_by_key, since, until} = get_files_for(params)
 
-    Logger.debug("querying #{inspect(params)}, got #{length(initial_files)} files to read")
+    Logger.debug("querying #{inspect(params)}, got #{length(files_by_key)} streams to read")
     Logger.debug("since: #{since}, until: #{until}")
-    now = DateTime.utc_now()
-
-    Logger.debug("since is #{DateTime.diff(now, since, :millisecond)}msec ago")
-    Logger.debug("until is #{DateTime.diff(until, now, :millisecond)}msec in the future")
 
     if DateTime.compare(since, until) == :gt do
       raise "since must be before until. this is a bug. since: #{inspect(since)}, until: #{inspect(until)}. #{inspect(DateTime.compare(since, until))}"
     end
 
-    initial_files
-    |> Enum.flat_map(fn {_, _, k0k1, file_path} ->
-      {:ok, lines} = read_log_lines(k0k1, file_path, since, until, params["grep"], opts)
-      lines
-    end)
-    # TODO (optimization): we do not need to sort if there's only one full selector (k0.k1, rather than k0.* or *.k1)
-    # TODO (optimization): on the full selector case, sort filepaths by date rather than by k0k1 (then quit this second sort lol)
+    grep = params["grep"]
+
+    # each stream (one k0.k1) is read in ascending date order and stops once it has
+    # `limit` lines — any single stream can contribute at most `limit` to an oldest-N
+    # result, so we never read whole day-files past the limit. the per-stream capped
+    # lists are then merged and sliced to the global oldest `limit`.
+    files_by_key
+    |> Enum.map(fn key_files -> read_stream_lines(key_files, since, until, grep, opts, limit) end)
+    |> Enum.concat()
     |> Enum.sort_by(fn line -> line.timestamp end, :asc)
-    # TODO (optimization): once amount of lines hits limit, we can stop reading
-    |> Enum.slice(0..(limit - 1))
+    |> Enum.take(limit)
     # reprocess the lines so their timestamps are DateTime instead of ints
     |> Enum.map(fn line ->
       %LogLine{
@@ -233,38 +306,52 @@ defmodule Fog.LogStore do
     |> then(fn v -> {:ok, v} end)
   end
 
-  defp parse_line_v1(key0, key1, line) do
-    parsed = String.split(line, "\t")
+  # read a single stream's day-files in ascending date order, stopping early once we've
+  # accumulated `limit` lines (further/older files can't contribute to the oldest N).
+  defp read_stream_lines({k0k1, files}, since, until, grep, opts, limit) do
+    files
+    |> Enum.reduce_while([], fn file, acc ->
+      {:ok, lines} = read_log_lines(k0k1, file, since, until, grep, opts)
+      acc = acc ++ lines
 
-    if length(parsed) < 3 do
-      Logger.warning("invalid log line: #{line}")
-    end
-
-    line_timestamp_unix_str = parsed |> Enum.at(1)
-
-    line_timestamp_unix =
-      case Integer.parse(line_timestamp_unix_str) do
-        {num, ""} when is_integer(num) ->
-          num
-
-        _ ->
-          raise "invalid line timestamp: #{line_timestamp_unix_str}, k0k1: #{key0}.#{key1} line is #{line}"
+      if length(acc) >= limit do
+        {:halt, acc}
+      else
+        {:cont, acc}
       end
+    end)
+    |> Enum.take(limit)
+  end
 
-    logline = parsed |> Enum.slice(2..length(parsed)) |> Enum.join("\t")
+  defp parse_line_v1(key0, key1, line) do
+    # <version>\t<timestamp>\t<log text> — parts: 3 keeps any tabs embedded in the text
+    # in the third field without a slice/join round-trip.
+    case String.split(line, "\t", parts: 3) do
+      [_version, line_timestamp_unix_str, logline] ->
+        line_timestamp_unix =
+          case Integer.parse(line_timestamp_unix_str) do
+            {num, ""} when is_integer(num) ->
+              num
 
-    %LogLine{
-      key0: key0,
-      key1: key1,
-      timestamp: line_timestamp_unix,
-      text: logline
-    }
+            _ ->
+              raise "invalid line timestamp: #{line_timestamp_unix_str}, k0k1: #{key0}.#{key1} line is #{line}"
+          end
+
+        %LogLine{
+          key0: key0,
+          key1: key1,
+          timestamp: line_timestamp_unix,
+          text: logline
+        }
+
+      _ ->
+        raise "invalid log line (expected version\\ttimestamp\\ttext): #{inspect(line)}, k0k1: #{key0}.#{key1}"
+    end
   end
 
   defp read_log_lines({key0, key1}, {_, file_path}, since, until, grep, opts) do
     Logger.debug("querying file #{file_path} with opts #{inspect(opts)}")
 
-    verbose_debug? = opts |> Keyword.get(:verbose_debug, false)
     forced_features = opts |> Keyword.get(:forced_features, [])
     forced_index_ts_v1? = Enum.any?(forced_features, fn f -> f == :index_ts_v1 end)
 
@@ -338,96 +425,66 @@ defmodule Fog.LogStore do
         {0, File.stat!(file_path) |> Map.get(:size)}
       end
 
-    {:ok, file} = File.open(file_path, [:read])
-    Logger.debug("fseek on #{file_path} to #{start_offset}")
-    {:ok, _} = :file.position(file, start_offset)
     amount = end_offset - start_offset
 
     # convert to unix ts for fast lookup in the file
     since = since |> DateTime.to_unix(:millisecond)
     until = until |> DateTime.to_unix(:millisecond)
 
-    Logger.debug("start offset #{start_offset}, end offset #{end_offset}")
+    Logger.debug(
+      "getting #{amount} bytes from offset #{start_offset} (#{since / 1000}..#{until / 1000}) on #{file_path}"
+    )
+
+    # a :raw handle + a single pread of the index-bounded byte range is far cheaper than
+    # line-by-line IO.read through the IO server. offsets are line-aligned (index seeks
+    # point at a second's first line; defaults are 0 and the file size), so the range is
+    # a whole number of lines and :binary.split leaves only a trailing "" to drop.
+    {:ok, file} = File.open(file_path, [:read, :raw, :binary])
+
+    lines =
+      if amount <= 0 do
+        []
+      else
+        case :file.pread(file, start_offset, amount) do
+          {:ok, data} -> :binary.split(data, "\n", [:global])
+          :eof -> []
+        end
+      end
+
+    :ok = :file.close(file)
+
+    result =
+      lines
+      |> Enum.reduce([], fn line, acc ->
+        cond do
+          line == "" ->
+            acc
+
+          grep != nil and not String.contains?(line, grep) ->
+            acc
+
+          # storage format v1
+          String.starts_with?(line, "1") ->
+            l = parse_line_v1(key0, key1, line)
+
+            if l.timestamp >= since and l.timestamp < until do
+              [l | acc]
+            else
+              acc
+            end
+
+          true ->
+            Logger.warning("invalid log line: '#{line}'")
+            acc
+        end
+      end)
+      |> Enum.reverse()
 
     Logger.debug(
-      "getting #{amount} bytes from #{since / 1000} to #{until / 1000} on #{file_path}"
+      "filtered to #{length(result)} loglines from (#{key0}/#{key1}), since=#{inspect(since)}"
     )
 
-    # TODO (optimization): use Stream instead of reading entire file into memory
-    stream_positioned_file(file, amount)
-    |> Enum.to_list()
-    |> Stream.map(fn line ->
-      cond do
-        line == "" ->
-          Logger.warning("got an empty line in #{inspect(file_path)}")
-          nil
-
-        grep != nil and not String.contains?(line, grep) ->
-          nil
-
-        # storage format v1
-        String.starts_with?(line, "1") ->
-          parse_line_v1(key0, key1, line)
-
-        true ->
-          Logger.warning("invalid log line: '#{line}'")
-          nil
-      end
-    end)
-    |> Stream.filter(fn
-      nil ->
-        false
-
-      %LogLine{} = l ->
-        if verbose_debug? do
-          Logger.debug(
-            "line #{l.text}, timestamp #{l.timestamp / 1000}, is above since? #{inspect(l.timestamp >= since)}, is below until? #{inspect(l.timestamp <= until)}"
-          )
-        end
-
-        l.timestamp >= since and l.timestamp < until
-    end)
-    |> Enum.to_list()
-    |> then(fn v ->
-      Logger.debug(
-        "filtered to #{length(v)} loglines from (#{key0}/#{key1}), since=#{inspect(since)}"
-      )
-
-      {:ok, v}
-    end)
-    |> then(fn
-      v ->
-        :ok = :file.close(file)
-        v
-    end)
-  end
-
-  def stream_positioned_file(file_handle, amount) do
-    Stream.resource(
-      fn -> {file_handle, amount} end,
-      fn
-        {handle, bytes_left} when bytes_left > 0 ->
-          case IO.read(handle, :line) do
-            :eof ->
-              {:halt, {handle, 0}}
-
-            line ->
-              line_bytes = byte_size(line)
-
-              if line_bytes <= bytes_left do
-                {[String.trim_trailing(line)], {handle, bytes_left - line_bytes}}
-              else
-                # Read partial line up to the byte limit
-                truncated = binary_part(line, 0, bytes_left)
-                {[String.trim_trailing(truncated)], {handle, 0}}
-              end
-          end
-
-        {handle, 0} ->
-          {:halt, {handle, 0}}
-      end,
-      fn {handle, _} -> File.close(handle) end
-    )
+    {:ok, result}
   end
 
   def datetime_from_path(path) do

@@ -25,20 +25,57 @@ defmodule Fog.LogStore.Realtime do
     GenServer.cast(__MODULE__, {:process_log, log_entry})
   end
 
+  @subscriber_table :fog_realtime_subs
+  @ingest_table :fog_ingest_counts
+
+  @doc """
+  Fast, lock-free check for whether any client is currently following. Lets the
+  ingestion path skip the `process_log` cast (and this GenServer's mailbox) entirely
+  when nobody is subscribed.
+  """
+  def any_subscribers? do
+    case :ets.whereis(@subscriber_table) do
+      :undefined -> false
+      _ -> :ets.lookup_element(@subscriber_table, :count, 2) > 0
+    end
+  end
+
+  @doc """
+  Count `n` ingested log lines for `{key0, key1}`. Uses a lock-free ETS counter so
+  the per-second "received N logs" stat keeps working even when nobody is following
+  (i.e. independently of whether `process_log/1` runs).
+  """
+  def count_ingest(key0, key1, n) do
+    case :ets.whereis(@ingest_table) do
+      :undefined -> :ok
+      _ -> :ets.update_counter(@ingest_table, {key0, key1}, n, {{key0, key1}, 0})
+    end
+
+    :ok
+  end
+
   # Server Callbacks
 
   @impl true
   def init(_opts) do
+    :ets.new(@subscriber_table, [:named_table, :public, :set, read_concurrency: true])
+    :ets.insert(@subscriber_table, {:count, 0})
+
+    :ets.new(@ingest_table, [:named_table, :public, :set, write_concurrency: true])
+
     schedule_log()
 
     {:ok,
      %{
-       log_counters: %{},
-       # Map of filter hash -> %{filter: filter_params, clients: [{client_id, pid}, ...]}
+       # Map of filter hash -> %{filter: filter_params, parsed: parsed_filter, clients: [{client_id, pid}, ...]}
        filters: %{},
        # Map of client_id -> {filter_hash, pid} for quick lookups during unsubscribe
        clients: %{}
      }}
+  end
+
+  defp publish_subscriber_count(clients) do
+    :ets.insert(@subscriber_table, {:count, map_size(clients)})
   end
 
   defp schedule_log() do
@@ -53,20 +90,22 @@ defmodule Fog.LogStore.Realtime do
         Process.monitor(pid)
 
         filter_hash = hash_filter(filter_params)
+        parsed = parse_filter(filter_params)
 
         # Update filters map
         new_filters =
           Map.update(
             state.filters,
             filter_hash,
-            %{filter: filter_params, clients: [{client_id, pid}]},
-            fn %{filter: ^filter_params, clients: clients} = filter_entry ->
+            %{filter: filter_params, parsed: parsed, clients: [{client_id, pid}]},
+            fn %{clients: clients} = filter_entry ->
               %{filter_entry | clients: [{client_id, pid} | clients]}
             end
           )
 
         # Update clients map
         new_clients = Map.put(state.clients, client_id, {filter_hash, pid})
+        publish_subscriber_count(new_clients)
 
         {:reply, :ok, %{state | filters: new_filters, clients: new_clients}}
 
@@ -96,6 +135,7 @@ defmodule Fog.LogStore.Realtime do
           end
 
         new_clients = Map.delete(state.clients, client_id)
+        publish_subscriber_count(new_clients)
 
         {:reply, :ok, %{state | filters: new_filters, clients: new_clients}}
     end
@@ -103,38 +143,32 @@ defmodule Fog.LogStore.Realtime do
 
   @impl true
   def handle_cast({:process_log, %Fog.LogStore.LogLine{} = log_entry}, state) do
-    Enum.each(state.filters, fn {_hash, %{filter: filter_params, clients: clients}} ->
-      if matches_filter?(log_entry, filter_params) do
+    Enum.each(state.filters, fn {_hash, %{parsed: parsed, clients: clients}} ->
+      if matches_filter?(log_entry, parsed) do
         Enum.each(clients, fn {client_id, pid} ->
           send(pid, {:log_entry, client_id, log_entry})
         end)
       end
     end)
 
-    {:noreply,
-     put_in(
-       state.log_counters,
-       Map.update(state.log_counters, {log_entry.key0, log_entry.key1}, 0, fn v ->
-         v + 1
-       end)
-     )}
+    {:noreply, state}
   end
 
   @impl true
   def handle_info(:schedule_log, state) do
-    new_counters =
-      Enum.map(
-        state.log_counters,
-        fn {k0k1, count} ->
-          {k0, k1} = k0k1
-          Logger.info("#{k0}/#{k1}: received #{count} logs")
-          {k0k1, 0}
-        end
-      )
-      |> Map.new()
+    # counts are accumulated at ingest time via count_ingest/3 (ETS), so this works
+    # whether or not anyone is following. subtract exactly what we logged so lines
+    # counted between tab2list and reset aren't lost.
+    :ets.tab2list(@ingest_table)
+    |> Enum.each(fn {{k0, k1} = key, count} ->
+      if count > 0 do
+        Logger.info("#{k0}/#{k1}: received #{count} logs")
+        :ets.update_counter(@ingest_table, key, -count)
+      end
+    end)
 
     schedule_log()
-    {:noreply, state |> Map.put(:log_counters, new_counters)}
+    {:noreply, state}
   end
 
   @impl true
@@ -163,6 +197,21 @@ defmodule Fog.LogStore.Realtime do
     |> :erlang.phash2()
   end
 
+  # resolve since/until to absolute DateTimes once, at subscribe time, instead of
+  # re-parsing the strings on every log line for every subscriber. relative windows
+  # (e.g. "2h") become absolute at subscribe time, which is what a live follow wants.
+  defp parse_filter(filter_params) do
+    {:ok, since} = Fog.LogStore.parse_datetime(Map.get(filter_params, "since"))
+    {:ok, until} = Fog.LogStore.parse_datetime(Map.get(filter_params, "until"))
+
+    %{
+      selectors: Map.get(filter_params, "selectors"),
+      since: since,
+      until: until,
+      grep: Map.get(filter_params, "grep")
+    }
+  end
+
   defp validate_filter_params(params) do
     Logger.debug("subscribing with params: #{inspect(params)}")
     valid_keys = ~w(selectors since until grep follow limit)
@@ -182,60 +231,38 @@ defmodule Fog.LogStore.Realtime do
     end
   end
 
-  defp matches_filter?(log_entry, filter_params) do
-    with true <- matches_selectors?(log_entry, filter_params),
-         true <- matches_time_range?(log_entry, filter_params),
-         true <- matches_grep?(log_entry, filter_params) do
-      true
-    else
-      false -> false
-    end
+  defp matches_filter?(log_entry, parsed) do
+    matches_selectors?(log_entry, parsed) and
+      matches_time_range?(log_entry, parsed) and
+      matches_grep?(log_entry, parsed)
   end
 
-  defp matches_selectors?(entry, %{"selectors" => selectors}),
+  defp matches_selectors?(entry, %{selectors: selectors}),
     do: Fog.LogStore.matches_selectors?({entry.key0, entry.key1}, selectors)
 
-  defp matches_time_range?(log_entry, filter_params) do
+  defp matches_time_range?(log_entry, %{since: since, until: until}) do
     timestamp = log_entry.timestamp || raise "nil timestamp. should never happen"
-    {:ok, since} = Fog.LogStore.parse_datetime(Map.get(filter_params, "since"))
-    {:ok, until} = Fog.LogStore.parse_datetime(Map.get(filter_params, "until"))
 
     cond do
       is_nil(since) and is_nil(until) ->
         true
 
       is_nil(since) ->
-        compare_timestamps(timestamp, until) <= 0
+        DateTime.compare(timestamp, until) in [:lt, :eq]
 
       is_nil(until) ->
-        compare_timestamps(timestamp, since) >= 0
+        DateTime.compare(timestamp, since) in [:gt, :eq]
 
       true ->
-        compare_timestamps(timestamp, since) >= 0 and compare_timestamps(timestamp, until) <= 0
+        DateTime.compare(timestamp, since) in [:gt, :eq] and
+          DateTime.compare(timestamp, until) in [:lt, :eq]
     end
   end
 
-  defp matches_grep?(%Fog.LogStore.LogLine{text: data}, %{"grep" => pattern})
-       when is_binary(data) do
-    String.contains?(data, pattern)
-  end
+  defp matches_grep?(_entry, %{grep: nil}), do: true
 
-  defp matches_grep?(_, %{"grep" => _}), do: false
-  defp matches_grep?(_, _), do: true
+  defp matches_grep?(%Fog.LogStore.LogLine{text: data}, %{grep: pattern}) when is_binary(data),
+    do: String.contains?(data, pattern)
 
-  defp compare_timestamps(timestamp1, timestamp2) do
-    DateTime.compare(
-      parse_timestamp(timestamp1),
-      parse_timestamp(timestamp2)
-    )
-  end
-
-  defp parse_timestamp(timestamp) when is_binary(timestamp) do
-    case DateTime.from_iso8601(timestamp) do
-      {:ok, datetime, _} -> datetime
-      _ -> raise "Invalid timestamp format: #{inspect(timestamp)}"
-    end
-  end
-
-  defp parse_timestamp(%DateTime{} = timestamp), do: timestamp
+  defp matches_grep?(_entry, _parsed), do: false
 end

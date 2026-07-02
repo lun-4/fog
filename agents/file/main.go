@@ -28,6 +28,20 @@ type LogData struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+type BatchLine struct {
+	Data      string `json:"data"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type BatchData struct {
+	Key0  string      `json:"key0"`
+	Key1  string      `json:"key1"`
+	Lines []BatchLine `json:"lines"`
+}
+
+// maxBatchLines caps how many lines are coalesced into a single send_batch frame.
+const maxBatchLines = 500
+
 type Agent struct {
 	serverURL             string
 	token                 string
@@ -418,6 +432,24 @@ func (li *LockedInt) Reset() uint {
 }
 
 func (a *Agent) readAndSend(reader *bufio.Reader) {
+	batch := make([]BatchLine, 0, maxBatchLines)
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		a.sendChan <- Message{
+			Op: "send_batch",
+			Data: BatchData{
+				Key0:  a.key0,
+				Key1:  a.key1,
+				Lines: batch,
+			},
+		}
+		// hand the slice off to the channel and start a fresh one
+		batch = make([]BatchLine, 0, maxBatchLines)
+	}
+
 	for {
 		// Read until next newline
 		line, err := reader.ReadString('\n')
@@ -432,18 +464,19 @@ func (a *Agent) readAndSend(reader *bufio.Reader) {
 		// Remove trailing newline if present
 		line = strings.TrimRight(line, "\r\n")
 
-		// Send the complete line
+		// Coalesce lines read in this pass into a single batch frame
 		a.msgCounter.Incr()
-		a.sendChan <- Message{
-			Op: "send",
-			Data: LogData{
-				Key0:      a.key0,
-				Key1:      a.key1,
-				Data:      line,
-				Timestamp: time.Now().UnixMilli(),
-			},
+		batch = append(batch, BatchLine{
+			Data:      line,
+			Timestamp: time.Now().UnixMilli(),
+		})
+
+		if len(batch) >= maxBatchLines {
+			flush()
 		}
 	}
+
+	flush()
 }
 
 func main() {

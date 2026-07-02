@@ -14,6 +14,15 @@ defmodule Fog.LogServer do
     GenServer.call(server, {:store, line, timestamp})
   end
 
+  @doc """
+  Store many `{line, %DateTime{}}` entries in a single call. The entries are
+  written to disk with a single `IO.write` per day-file, and a single ack is
+  sent back to the caller.
+  """
+  def store_batch(server, entries) when is_list(entries) do
+    GenServer.call(server, {:store_batch, entries})
+  end
+
   @spec get_or_start_server(String.t(), String.t()) :: {:ok, pid} | term()
   def get_or_start_server(key0, key1) do
     k0k1 = {key0, key1}
@@ -76,16 +85,98 @@ defmodule Fog.LogServer do
     Process.send_after(self(), :sync_index, 1 * 60 * 1000)
   end
 
-  @devmode false
-
   @impl true
   def handle_call({:store, line, %DateTime{} = timestamp}, {agent_pid, _}, state) do
     {key0, key1} = state.k0k1
-    log_path = Fog.LogStore.file_for(:writing, key0, key1, timestamp)
-    index_path = Fog.IndexStore.path_for(key0, key1, timestamp)
+    state = write_chunk(state, key0, key1, [{line, timestamp}])
+    state = put_in(state.websocket_pids, Map.put(state.websocket_pids, agent_pid, true))
 
+    send(agent_pid, {:log_server_ack, key0, key1})
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:store_batch, entries}, {agent_pid, _}, state) do
+    {key0, key1} = state.k0k1
+
+    # group consecutive same-day entries so each day-file takes a single IO.write.
+    # (batches are time-ordered so same-day entries are consecutive; day rollover
+    #  mid-batch just yields more than one chunk, which is still correct.)
+    state =
+      entries
+      |> Enum.chunk_by(fn {_line, %DateTime{} = ts} ->
+        Fog.LogStore.file_for(:writing, key0, key1, ts)
+      end)
+      |> Enum.reduce(state, fn chunk, acc -> write_chunk(acc, key0, key1, chunk) end)
+
+    state = put_in(state.websocket_pids, Map.put(state.websocket_pids, agent_pid, true))
+
+    # one ack per batch
+    send(agent_pid, {:log_server_ack, key0, key1})
+    {:reply, :ok, state}
+  end
+
+  # writes a chunk of {line, timestamp} entries that all belong to the same day-file,
+  # with a single IO.write, tracking the byte offset in-state (no per-line fstat/seek
+  # syscall) and filling in-memory index_ts_v1 seek slots as we go.
+  defp write_chunk(state, _key0, _key1, []), do: state
+
+  defp write_chunk(state, key0, key1, [{_line, %DateTime{} = first_ts} | _] = chunk) do
+    log_path = Fog.LogStore.file_for(:writing, key0, key1, first_ts)
+    index_path = Fog.IndexStore.path_for(key0, key1, first_ts)
+
+    {index_data, index_was_present?} =
+      get_index_data(state, key0, key1, first_ts, log_path, index_path)
+
+    {fd, offset0} = get_fd(state, log_path)
+
+    {iodata, final_offset, index_data, index_changed?} =
+      Enum.reduce(chunk, {[], offset0, index_data, false}, fn {line, %DateTime{} = ts},
+                                                              {io_acc, offset, idx, changed} ->
+        timestamp_unix_ms = DateTime.to_unix(ts, :millisecond)
+        # storage format v1: <version>\t<timestamp>\t<log itself>
+        payload = "1\t#{timestamp_unix_ms}\t#{line}\n"
+
+        {idx, changed} =
+          if idx != nil do
+            second_of_day = Fog.IndexStore.second_of_day(ts)
+
+            if Enum.at(idx.seeks, second_of_day) == -1 do
+              {put_in(idx.seeks, List.replace_at(idx.seeks, second_of_day, offset)), true}
+            else
+              {idx, changed}
+            end
+          else
+            {idx, changed}
+          end
+
+        {[io_acc, payload], offset + byte_size(payload), idx, changed}
+      end)
+
+    IO.write(fd, iodata)
+
+    state =
+      if index_data != nil do
+        # W6: when we start tracking a fresh index in memory, checkpoint it right away
+        # instead of leaving the first seeks unsynced for up to a full minute.
+        if not index_was_present? and index_changed? do
+          Fog.IndexStore.write(key0, key1, first_ts, index_data)
+        end
+
+        put_in(
+          state.index_ts_v1,
+          Map.put(state.index_ts_v1, index_path, {key0, key1, first_ts, index_data})
+        )
+      else
+        state
+      end
+
+    put_in(state.fds, Map.put(state.fds, log_path, {fd, System.monotonic_time(), final_offset}))
+  end
+
+  defp get_index_data(state, key0, key1, timestamp, log_path, index_path) do
     build_index_ts_v1? = Fog.IndexStore.should_index_log_path?(log_path)
-    maybe_index_data = state.index_ts_v1 |> Map.get(index_path)
+    index_was_present? = Map.has_key?(state.index_ts_v1, index_path)
+    maybe_index_data = Map.get(state.index_ts_v1, index_path)
 
     {:ok, index_data} =
       cond do
@@ -95,8 +186,8 @@ defmodule Fog.LogServer do
         maybe_index_data == nil ->
           case Fog.IndexStore.read(key0, key1, timestamp) do
             {:error, :enoent} ->
-              # we need to build the index for this file right now as it's not available
-              # and we want it (as our log file is bigger than the desired indexable size)
+              # log file is bigger than the desired indexable size but has no index yet;
+              # build it now so queries against this file are fast.
               :ok = Fog.LogStore.build_index_ts_v1(key0, key1, timestamp)
               Fog.IndexStore.read(key0, key1, timestamp)
 
@@ -109,81 +200,21 @@ defmodule Fog.LogServer do
           {:ok, real_index_data}
       end
 
-    maybe_fd = state.fds |> Map.get(log_path)
+    {index_data, index_was_present?}
+  end
 
-    {:ok, fd} =
-      case maybe_fd do
-        {fd, _} ->
-          {:ok, fd}
+  # returns {fd, current_offset}. the offset is tracked in-state (initialised to the
+  # file size on open) so we never pay a per-line :file.position/2 syscall.
+  defp get_fd(state, log_path) do
+    case Map.get(state.fds, log_path) do
+      {fd, _fd_timestamp, offset} ->
+        {fd, offset}
 
-        nil ->
-          with {:ok, fd} <- File.open(log_path, [:append]) do
-            {:ok, _} = :file.position(fd, :eof)
-            {:ok, fd}
-          end
-      end
-
-    timestamp_unix_ms = timestamp |> DateTime.to_unix(:millisecond)
-    {:ok, current_seek} = :file.position(fd, :cur)
-    # TODO (optimization): batch to temporary file then fsync+rename
-    # <version>\t<timestamp>\t<log itself>
-    IO.write(fd, "1\t#{timestamp_unix_ms}\t#{line}\n")
-
-    if @devmode do
-      Logger.debug("log line=#{line}, tstamp=#{timestamp}, file=#{log_path}")
+      nil ->
+        {:ok, fd} = File.open(log_path, [:append])
+        {:ok, offset} = :file.position(fd, :eof)
+        {fd, offset}
     end
-
-    fd_timestamp = System.monotonic_time()
-
-    # if index_data didn't have this second of the day, set it
-    # (writing to the index file happens asynchronously)
-    state =
-      if index_data != nil do
-        second_of_day = Fog.IndexStore.second_of_day(timestamp)
-
-        maybe_seek =
-          if index_data != nil do
-            index_data.seeks |> Enum.at(second_of_day)
-          else
-            -1
-          end
-
-        # TODO (optimization): if we are a new index, we should sync immediately instead of waiting
-        # one entire minute with very useful data in-memory...
-        index_data =
-          if maybe_seek == -1 do
-            Logger.debug(
-              "#{key0}/#{key1} log server: setting index_ts_v1 seek at #{inspect(second_of_day)} = #{current_seek}"
-            )
-
-            put_in(
-              index_data.seeks,
-              index_data.seeks |> List.replace_at(second_of_day, current_seek)
-            )
-          else
-            index_data
-          end
-
-        put_in(
-          state.index_ts_v1,
-          Map.put(state.index_ts_v1, index_path, {key0, key1, timestamp, index_data})
-        )
-      else
-        state
-      end
-
-    state = put_in(state.fds, Map.put(state.fds, log_path, {fd, fd_timestamp}))
-
-    state =
-      put_in(
-        state.websocket_pids,
-        Map.put(state.websocket_pids, agent_pid, true)
-      )
-
-    # for now since we don't batch, ack always
-    send(agent_pid, {:log_server_ack, key0, key1})
-
-    {:reply, :ok, state}
   end
 
   @impl true
@@ -216,7 +247,7 @@ defmodule Fog.LogServer do
   @impl true
   def handle_info(:check_unused_fds, state) do
     state.fds
-    |> Enum.map(fn {path, {fd, fd_timestamp}} ->
+    |> Enum.map(fn {path, {fd, fd_timestamp, offset}} ->
       current_timestamp = System.monotonic_time()
       delta = System.convert_time_unit(current_timestamp - fd_timestamp, :native, :second)
       # if it's been an hour, we should close it
@@ -225,7 +256,7 @@ defmodule Fog.LogServer do
         File.close(fd)
         nil
       else
-        {path, {fd, fd_timestamp}}
+        {path, {fd, fd_timestamp, offset}}
       end
     end)
     |> Enum.filter(fn v -> v != nil end)

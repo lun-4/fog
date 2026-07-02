@@ -107,6 +107,17 @@ defmodule FogWeb.AgentSocket do
     {:ok, state}
   end
 
+  defp handle_message(
+         %{"op" => "send_batch", "data" => %{"lines" => lines, "key0" => key0, "key1" => key1}} =
+           _message,
+         _opts,
+         state
+       )
+       when is_list(lines) do
+    :ok = Fog.LogStore.store_batch(key0, key1, lines)
+    {:ok, state}
+  end
+
   defp handle_message(_message, _opts, state) do
     {:stop, :normal, {4000, "unknown op or bad data"}, state}
   end
